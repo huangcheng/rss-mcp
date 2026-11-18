@@ -349,6 +349,27 @@ def test_search_entries_finds_text_and_refreshes_after_content_update(
     assert store.search_entries("old", subscription_id=first.id) == []
 
 
+def test_search_entries_matches_keywords_in_either_order(store: Store) -> None:
+    sub = store.add_subscription("https://example.com/feed.xml")
+    store.upsert_entries(
+        sub.id,
+        [
+            EntryInput(guid="split", title="Python tools", summary="an rss reader"),
+            EntryInput(guid="adjacent", title="Python rss", summary="together"),
+            EntryInput(guid="python-only", title="Python tools", summary="unrelated"),
+        ],
+    )
+
+    assert {entry.guid for entry in store.search_entries("python rss")} == {
+        "split",
+        "adjacent",
+    }
+    assert {entry.guid for entry in store.search_entries("rss python")} == {
+        "split",
+        "adjacent",
+    }
+
+
 def test_search_entries_safe_with_fts_specials(store: Store) -> None:
     sub = store.add_subscription("https://example.com/feed.xml")
     store.upsert_entries(

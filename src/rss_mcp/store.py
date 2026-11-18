@@ -107,10 +107,15 @@ def _entry_from_row(row: sqlite3.Row) -> Entry:
 
 
 def _fts_match_query(query: str) -> str | None:
-    text = query.strip()
-    if not text or not text.strip('"'):
+    terms: list[str] = []
+    for raw in query.split():
+        token = raw.strip('"')
+        if not token:
+            continue
+        terms.append('"' + token.replace('"', '""') + '"')
+    if not terms:
         return None
-    return '"' + text.replace('"', '""') + '"'
+    return " AND ".join(terms)
 
 
 def _subscription_from_row(row: sqlite3.Row) -> Subscription:
