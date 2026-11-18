@@ -1,0 +1,31 @@
+[project]
+name = "rss-mcp"
+version = "0.1.0"
+description = "Agent-only MCP server for RSS subscriptions, fetch, and unread tracking."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=2.3",
+    "httpx",
+    "feedparser",
+    "readability-lxml",
+    "lxml",
+]
+
+[project.scripts]
+rss-mcp = "rss_mcp.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rss_mcp"]
