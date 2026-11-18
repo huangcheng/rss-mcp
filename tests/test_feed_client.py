@@ -507,3 +507,24 @@ async def test_fetch_feed_resolves_relative_links_against_the_final_url(monkeypa
         ("rel-1", "https://example.com/blog/posts/1"),
         ("abs-1", "https://cdn.example.com/a"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_returns_error_for_non_ascii_user_agent(monkeypatch):
+    called = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called["n"] += 1
+        return httpx.Response(200, content=RSS)
+
+    _install(monkeypatch, handler)
+    result = await fetch_feed(
+        "https://example.com/rss.xml",
+        etag=None,
+        last_modified=None,
+        user_agent="阅读器/1.0",
+        entry_cap=10,
+    )
+    assert result.status == "error"
+    assert result.entries == []
+    assert called["n"] == 0

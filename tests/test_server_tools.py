@@ -65,13 +65,19 @@ async def test_tools_list_is_exactly_the_ten_tools_in_table_order(server_setting
 
     server = create_server(server_settings)
     assert server.name == "rss-mcp"
+    assert server.version == "0.1.0"
     async with Client(server) as client:
         listed = await client.list_tools()
         caps = client.server_capabilities
+        info = client.server_info
     assert [tool.name for tool in listed.tools] == TOOL_NAMES
     assert caps.tools is not None
     assert caps.resources is None
     assert caps.prompts is None
+    assert info is not None
+    assert info.version == "0.1.0"
+    # subscriptions=False: hosts should not expect a live tools listChanged stream
+    assert "subscriptions/listen" not in server._lowlevel_server._request_handlers
 
 
 @pytest.mark.asyncio
@@ -162,6 +168,8 @@ async def test_search_entries_finds_text_upserted_in_the_store(server_settings: 
     assert len(capped["entries"]) == 1
     assert [entry["guid"] for entry in filtered["entries"]] == ["a2"]
     assert empty["entries"] == []
+    assert all(entry["content"] is None for entry in page["entries"])
+    assert all(entry["content"] is None for entry in filtered["entries"])
 
 
 @pytest.mark.asyncio
@@ -614,6 +622,60 @@ async def test_create_server_without_settings_uses_rss_mcp_db(
     assert db.is_file()
     assert added["url"] == "https://example.com/env.xml"
     assert not (tmp_path / "home" / ".local" / "share" / "rss-mcp" / "rss.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_list_and_search_omit_content_bodies_read_keeps_full(
+    server_settings: Settings,
+) -> None:
+    from rss_mcp.server import create_server
+
+    conn, store = _open_store(server_settings)
+    sub = store.add_subscription("https://example.com/feed.xml")
+    store.upsert_entries(
+        sub.id,
+        [
+            EntryInput(
+                guid="fat",
+                title="Fat article",
+                summary="short",
+                content="<p>huge body that must not list</p>",
+            )
+        ],
+    )
+    entry_id = store.list_entries(subscription_id=sub.id, limit=1)[0].id
+    conn.close()
+
+    async with Client(create_server(server_settings)) as client:
+        listed = await _ok(client, "list_entries", {"subscription_id": sub.id})
+        found = await _ok(client, "search_entries", {"query": "Fat"})
+        read = await _ok(client, "read_entry", {"entry_id": entry_id})
+
+    assert listed["entries"][0]["content"] is None
+    assert listed["entries"][0]["summary"] == "short"
+    assert found["entries"][0]["content"] is None
+    assert read["content"] == "<p>huge body that must not list</p>"
+
+
+@pytest.mark.asyncio
+async def test_read_entry_mark_read_default_false_and_true(
+    server_settings: Settings,
+) -> None:
+    from rss_mcp.server import create_server
+
+    conn, store = _open_store(server_settings)
+    sub = store.add_subscription("https://example.com/feed.xml")
+    store.upsert_entries(sub.id, [EntryInput(guid="g1", title="One", content="body")])
+    entry_id = store.list_entries(subscription_id=sub.id, limit=1)[0].id
+    conn.close()
+
+    async with Client(create_server(server_settings)) as client:
+        plain = await _ok(client, "read_entry", {"entry_id": entry_id})
+        assert plain["read_at"] is None
+        marked = await _ok(client, "read_entry", {"entry_id": entry_id, "mark_read": True})
+        assert marked["read_at"] is not None
+        again = await _ok(client, "read_entry", {"entry_id": entry_id})
+        assert again["read_at"] is not None
 
 
 def test_main_runs_the_stdio_server(monkeypatch: pytest.MonkeyPatch) -> None:

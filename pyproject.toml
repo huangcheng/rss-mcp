@@ -2,14 +2,22 @@
 name = "rss-mcp"
 version = "0.1.0"
 description = "Agent-only MCP server for RSS subscriptions, fetch, and unread tracking."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "huangcheng" }]
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=2.3",
+    "mcp>=2.3,<3",
     "httpx",
     "feedparser",
     "readability-lxml",
     "lxml",
 ]
+
+[project.urls]
+Homepage = "https://github.com/huangcheng/rss-mcp"
+Repository = "https://github.com/huangcheng/rss-mcp"
+Issues = "https://github.com/huangcheng/rss-mcp/issues"
 
 [project.scripts]
 rss-mcp = "rss_mcp.__main__:main"

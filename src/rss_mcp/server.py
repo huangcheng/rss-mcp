@@ -11,10 +11,11 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
+from rss_mcp import __version__
 from rss_mcp.config import Settings, load_settings
 from rss_mcp.db import connect, init_db
 from rss_mcp.feed_client import fetch_feed
-from rss_mcp.models import Subscription
+from rss_mcp.models import Entry, Subscription
 from rss_mcp.opml import build_opml, parse_opml
 from rss_mcp.readability_fetch import fetch_article_text
 from rss_mcp.store import Store
@@ -128,6 +129,13 @@ def _summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _entry_payload(entry: Entry, *, full: bool) -> dict[str, Any]:
+    payload = asdict(entry)
+    if not full:
+        payload["content"] = None
+    return payload
+
+
 # MCPServer always installs resource and prompt list handlers. v1 is tools-only,
 # so those methods are removed before the first discover.
 _SDK_RESOURCE_AND_PROMPT_METHODS = (
@@ -141,7 +149,12 @@ _SDK_RESOURCE_AND_PROMPT_METHODS = (
 
 def create_server(settings: Settings | None = None) -> MCPServer:
     resolved = load_settings() if settings is None else settings
-    server = MCPServer("rss-mcp", lifespan=_app_lifespan(resolved))
+    server = MCPServer(
+        "rss-mcp",
+        version=__version__,
+        subscriptions=False,
+        lifespan=_app_lifespan(resolved),
+    )
     handlers = server._lowlevel_server._request_handlers
     for method in _SDK_RESOURCE_AND_PROMPT_METHODS:
         handlers.pop(method, None)
@@ -190,7 +203,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         since: str | None = None,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """List cached entries. Limit falls back to the server default and is clamped."""
+        """List cached entries (bodies omitted). Limit falls back to the server default and is clamped."""
         app = _app(ctx)
         rows = app.store.list_entries(
             subscription_id=subscription_id,
@@ -198,15 +211,16 @@ def create_server(settings: Settings | None = None) -> MCPServer:
             limit=_limit(app.settings, limit),
             since=since,
         )
-        return {"entries": [asdict(row) for row in rows]}
+        return {"entries": [_entry_payload(row, full=False) for row in rows]}
 
     @server.tool()
     async def read_entry(
         entry_id: int,
         fetch_full: bool = False,
+        mark_read: bool = False,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """Return one entry. fetch_full replaces content only when article text is returned."""
+        """Return one entry. fetch_full replaces content only when article text is returned. mark_read sets read state."""
         app = _app(ctx)
         entry = app.store.get_entry(entry_id)
         if entry is None:
@@ -218,7 +232,12 @@ def create_server(settings: Settings | None = None) -> MCPServer:
                 refreshed = app.store.get_entry(entry.id)
                 if refreshed is not None:
                     entry = refreshed
-        return asdict(entry)
+        if mark_read:
+            app.store.mark_entries([entry_id], True)
+            refreshed = app.store.get_entry(entry_id)
+            if refreshed is not None:
+                entry = refreshed
+        return _entry_payload(entry, full=True)
 
     @server.tool()
     async def search_entries(
@@ -228,7 +247,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         limit: int | None = None,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """Full-text search over cached title, summary, and content."""
+        """Full-text search over cached title, summary, and content. Omits entry bodies; use read_entry for full content."""
         app = _app(ctx)
         rows = app.store.search_entries(
             query,
@@ -236,7 +255,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
             unread_only=unread_only,
             limit=_limit(app.settings, limit),
         )
-        return {"entries": [asdict(row) for row in rows]}
+        return {"entries": [_entry_payload(row, full=False) for row in rows]}
 
     @server.tool()
     async def mark_entry(

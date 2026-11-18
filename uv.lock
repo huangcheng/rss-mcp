@@ -1038,7 +1038,7 @@ requires-dist = [
     { name = "feedparser" },
     { name = "httpx" },
     { name = "lxml" },
-    { name = "mcp", specifier = ">=2.3" },
+    { name = "mcp", specifier = ">=2.3,<3" },
     { name = "readability-lxml" },
 ]
 

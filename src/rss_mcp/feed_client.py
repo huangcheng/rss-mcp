@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -172,14 +173,14 @@ async def fetch_feed(
                     return _error(f"HTTP {response.status_code}")
                 final_url = str(response.url)
                 body = await _read_limited(response)
-    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeEncodeError) as exc:
         message = str(exc).strip() or exc.__class__.__name__
         return _error(message)
     if body is None:
         return _error(f"response exceeds {MAX_FEED_BYTES} bytes")
     try:
         # BytesIO: feedparser.parse(bytes) opens a body that is an existing path.
-        parsed = feedparser.parse(io.BytesIO(body))
+        parsed = await asyncio.to_thread(feedparser.parse, io.BytesIO(body))
     except Exception as exc:
         return _error(f"unable to parse feed: {exc}")
     return _from_parsed(

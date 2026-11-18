@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-_DEFAULT_USER_AGENT = "rss-mcp/0.1 (+https://github.com/...)"
+_DEFAULT_USER_AGENT = "rss-mcp/0.1 (+https://github.com/huangcheng/rss-mcp)"
 
 
 @dataclass(frozen=True)
@@ -18,8 +18,8 @@ class Settings:
 
 def load_settings() -> Settings:
     raw_db = os.environ.get("RSS_MCP_DB")
-    if raw_db:
-        db_path = Path(raw_db).expanduser()
+    if raw_db and raw_db.strip():
+        db_path = Path(raw_db.strip()).expanduser()
     else:
         db_path = Path.home() / ".local" / "share" / "rss-mcp" / "rss.db"
     user_agent = os.environ.get("RSS_MCP_USER_AGENT") or _DEFAULT_USER_AGENT
