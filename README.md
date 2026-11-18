@@ -17,7 +17,7 @@ Cursor `mcp.json` (any stdio host can use the same command):
   "mcpServers": {
     "rss-mcp": {
       "command": "uvx",
-      "args": ["--from", "/absolute/path/to/rss-mcp", "rss-mcp"],
+      "args": ["rss-mcp-server"],
       "env": {
         "RSS_MCP_DB": "/absolute/path/rss.db"
       }
@@ -26,7 +26,7 @@ Cursor `mcp.json` (any stdio host can use the same command):
 }
 ```
 
-`uvx rss-mcp` once the package is on an index. From this checkout: `uv run rss-mcp`.
+The PyPI distribution is `rss-mcp-server` (`rss-mcp` is blocked by a similar existing project); it installs both the `rss-mcp-server` and `rss-mcp` commands. From this checkout: `uv run rss-mcp`, or `uvx --from /absolute/path/to/rss-mcp rss-mcp`.
 
 ## HTTP transport
 
