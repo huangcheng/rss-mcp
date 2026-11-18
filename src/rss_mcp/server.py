@@ -27,7 +27,7 @@ from starlette.responses import JSONResponse
 from rss_mcp import __version__
 from rss_mcp.config import Settings, load_settings
 from rss_mcp.db import connect_db, init_db
-from rss_mcp.feed_client import fetch_feed
+from rss_mcp.feed_client import discover_feeds, fetch_feed
 from rss_mcp.models import Entry, Subscription
 from rss_mcp.opml import build_opml, parse_opml
 from rss_mcp.readability_fetch import fetch_article_text
@@ -532,6 +532,13 @@ def create_server(settings: Settings | None = None) -> MCPServer:
     async def export_opml(*, ctx: Context) -> dict[str, Any]:
         """Export subscriptions as an OPML document, grouped by first tag."""
         return {"opml": build_opml(_app(ctx).store.list_subscriptions())}
+
+    @server.tool()
+    async def discover_feed(url: str, *, ctx: Context) -> dict[str, Any]:
+        """Find RSS/Atom feed URLs for a site: advertised link tags first, then common feed paths. Pass a candidate url to add_subscription."""
+        app = _app(ctx)
+        candidates = await discover_feeds(url, user_agent=app.settings.user_agent)
+        return {"candidates": candidates}
 
     return server
 

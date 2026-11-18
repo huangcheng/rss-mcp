@@ -25,6 +25,7 @@ TOOL_NAMES = [
     "mark_entry",
     "import_opml",
     "export_opml",
+    "discover_feed",
 ]
 
 def _open_store(settings: Settings) -> tuple[sqlite3.Connection, Store]:
@@ -60,7 +61,7 @@ async def _ok(client: Client, name: str, arguments: dict | None = None) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_tools_list_is_exactly_the_eleven_tools_in_table_order(server_settings: Settings) -> None:
+async def test_tools_list_is_exactly_the_twelve_tools_in_table_order(server_settings: Settings) -> None:
     # Drops a tool, renames one, or lists them in a different order.
     from rss_mcp.server import create_server
 
@@ -79,6 +80,29 @@ async def test_tools_list_is_exactly_the_eleven_tools_in_table_order(server_sett
     assert info.version == "0.1.2"
     # subscriptions=False: hosts should not expect a live tools listChanged stream
     assert "subscriptions/listen" not in server._lowlevel_server._request_handlers
+
+
+@pytest.mark.asyncio
+async def test_discover_feed_tool_wires_user_agent_and_shape(server_settings: Settings, monkeypatch) -> None:
+    from rss_mcp import server
+
+    seen = {}
+
+    async def fake_discover(url: str, **kwargs):
+        seen["url"] = url
+        seen["kwargs"] = kwargs
+        return [{"url": "https://example.com/feed.xml", "type": "rss"}]
+
+    monkeypatch.setattr(server, "discover_feeds", fake_discover)
+    async with Client(server.create_server(server_settings)) as client:
+        result = await client.call_tool("discover_feed", {"url": "https://example.com/"})
+
+    assert result.is_error is False
+    assert result.structured_content == {
+        "candidates": [{"url": "https://example.com/feed.xml", "type": "rss"}]
+    }
+    assert seen["url"] == "https://example.com/"
+    assert seen["kwargs"]["user_agent"] == server_settings.user_agent
 
 
 @pytest.mark.asyncio

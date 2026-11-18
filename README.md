@@ -1,6 +1,6 @@
 # rss-mcp
 
-Agent-only MCP server for RSS and Atom. A host drives it over stdio (default) or Streamable HTTP. There is no GUI, TUI, or interactive CLI. Subscriptions, cached entries, unread state, and full-text search live in one local SQLite file. Eleven tools plus two read-only resources; no prompts or MCP Apps.
+Agent-only MCP server for RSS and Atom. A host drives it over stdio (default) or Streamable HTTP. There is no GUI, TUI, or interactive CLI. Subscriptions, cached entries, unread state, and full-text search live in one local SQLite file. Twelve tools plus two read-only resources; no prompts or MCP Apps.
 
 Protocol: [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) (stdio or Streamable HTTP; tools + resources) via the official Python SDK v2 (`mcp` ≥ 2.3).
 
@@ -142,6 +142,7 @@ Both engines implement the same behavior: subscriptions, entries, read/star stat
 - `mark_entry` — Mark entries read/unread by `entry_ids`, or a whole subscription via `subscription_id`. Unknown ids are skipped.
 - `import_opml` — Add each OPML feed, preserving folder names as tags. Existing URLs are skipped.
 - `export_opml` — Export subscriptions as an OPML document, grouped by first tag.
+- `discover_feed` — Find RSS/Atom feed URLs for a site: advertised link tags first, then common feed paths. Pass a candidate url to `add_subscription`.
 
 ## Resources
 

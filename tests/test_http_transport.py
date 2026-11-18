@@ -24,6 +24,7 @@ TOOL_NAMES = [
     "mark_entry",
     "import_opml",
     "export_opml",
+    "discover_feed",
 ]
 
 

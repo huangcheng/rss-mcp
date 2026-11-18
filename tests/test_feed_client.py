@@ -534,3 +534,331 @@ async def test_fetch_feed_returns_error_for_non_ascii_user_agent(monkeypatch):
     assert result.status == "error"
     assert result.entries == []
     assert called["n"] == 0
+
+
+_RSS_BODY = b"""<?xml version="1.0"?><rss version="2.0"><channel>
+<title>Discovered Feed</title>
+<item><title>One</title><link>https://example.com/1</link></item>
+</channel></rss>"""
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_reads_advertised_link_tags(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    html = """<html><head>
+    <link rel="alternate" type="application/rss+xml" title="Main" href="/blog/feed.xml">
+    <link rel="alternate" type="application/atom+xml" href="https://other.example.com/atom">
+    <link rel="stylesheet" href="/style.css">
+    </head><body>hi</body></html>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/blog/"
+        return httpx.Response(200, text=html, headers={"content-type": "text/html"})
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/blog/", user_agent="test")
+    assert candidates == [
+        {"url": "https://example.com/blog/feed.xml", "type": "rss"},
+        {"url": "https://other.example.com/atom", "type": "atom"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_accepts_a_direct_feed_url(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_RSS_BODY, headers={"content-type": "application/rss+xml"})
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/feed.xml", user_agent="test")
+    assert candidates == [
+        {"url": "https://example.com/feed.xml", "type": "rss", "title": "Discovered Feed"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_probes_common_paths_when_unadvertised(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/feed":
+            return httpx.Response(200, content=_RSS_BODY)
+        if request.url.path == "/":
+            return httpx.Response(200, text="<html><body>no links</body></html>")
+        return httpx.Response(404)
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/", user_agent="test")
+    assert candidates == [
+        {"url": "https://example.com/feed", "type": "rss", "title": "Discovered Feed"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_returns_empty_when_nothing_found(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(200, text="<html><body>plain</body></html>")
+        return httpx.Response(404)
+
+    _install(monkeypatch, handler)
+    assert await discover_feeds("https://example.com/", user_agent="test") == []
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_returns_empty_on_fetch_error(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    _install(monkeypatch, handler)
+    assert await discover_feeds("https://example.com/", user_agent="test") == []
+
+
+_ATOM_BODY = b"""<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom Feed</title>
+<entry><title>E</title><id>urn:e1</id></entry></feed>"""
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_accepts_bom_prefixed_direct_feed(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/custom-feed.php":
+            return httpx.Response(200, content=b"\xef\xbb\xbf" + _RSS_BODY)
+        return httpx.Response(404)
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/custom-feed.php", user_agent="test")
+    assert candidates == [
+        {"url": "https://example.com/custom-feed.php", "type": "rss", "title": "Discovered Feed"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_accepts_prolog_less_atom_and_rss(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/atom":
+            return httpx.Response(200, content=_ATOM_BODY)
+        if request.url.path == "/rss":
+            return httpx.Response(200, content=b'<rss version="2.0"><channel><title>T</title></channel></rss>')
+        return httpx.Response(404)
+
+    _install(monkeypatch, handler)
+    atom = await discover_feeds("https://example.com/atom", user_agent="test")
+    assert atom == [{"url": "https://example.com/atom", "type": "atom", "title": "Atom Feed"}]
+    rss = await discover_feeds("https://example.com/rss", user_agent="test")
+    assert rss[0]["type"] == "rss"
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_accepts_rdf_rss10(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    rdf = b"""<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+xmlns="http://purl.org/rss/1.0/"><channel><title>RDF</title></channel>
+<item><title>I</title><link>https://example.com/i</link></item></rdf:RDF>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/rdf.xml":
+            return httpx.Response(200, content=rdf)
+        return httpx.Response(404)
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/rdf.xml", user_agent="test")
+    assert len(candidates) == 1
+    assert candidates[0]["type"] == "rss"
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_caps_oversized_homepage(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    monkeypatch.setattr("rss_mcp.feed_client.MAX_FEED_BYTES", 16)
+    html = '<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head></html>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html)
+
+    _install(monkeypatch, handler)
+    assert await discover_feeds("https://example.com/", user_agent="test") == []
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_skips_oversized_probe(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    monkeypatch.setattr("rss_mcp.feed_client.MAX_FEED_BYTES", 200)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(200, text="<html>plain</html>")
+        if request.url.path == "/feed":
+            return httpx.Response(200, content=b"x" * 300)
+        if request.url.path == "/rss.xml":
+            return httpx.Response(200, content=_RSS_BODY)
+        return httpx.Response(404)
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/", user_agent="test")
+    assert [c["url"] for c in candidates] == ["https://example.com/rss.xml"]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_returns_empty_on_invalid_url(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request should be made")
+
+    _install(monkeypatch, handler)
+    assert await discover_feeds("http://example.com:abc", user_agent="test") == []
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_returns_empty_for_non_ascii_user_agent(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request should be made")
+
+    _install(monkeypatch, handler)
+    assert await discover_feeds("https://example.com/", user_agent="阅读器/1.0") == []
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_ignores_error_pages_with_link_tags(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    html = '<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head></html>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text=html)
+
+    _install(monkeypatch, handler)
+    assert await discover_feeds("https://example.com/missing", user_agent="test") == []
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_rejects_soft_200_html_probes(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html><body>SPA catch-all</body></html>")
+
+    _install(monkeypatch, handler)
+    assert await discover_feeds("https://example.com/", user_agent="test") == []
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_tolerates_probe_errors(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(200, text="<html>plain</html>")
+        if request.url.path == "/feed":
+            raise httpx.ConnectError("reset", request=request)
+        if request.url.path == "/rss.xml":
+            return httpx.Response(200, content=_RSS_BODY)
+        return httpx.Response(404)
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/", user_agent="test")
+    assert [c["url"] for c in candidates] == ["https://example.com/rss.xml"]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_merges_multiple_probes_in_order(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(200, text="<html>plain</html>")
+        if request.url.path == "/rss.xml":
+            return httpx.Response(200, content=_RSS_BODY)
+        if request.url.path == "/atom.xml":
+            return httpx.Response(200, content=_ATOM_BODY)
+        return httpx.Response(404)
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/", user_agent="test")
+    assert [(c["url"], c["type"]) for c in candidates] == [
+        ("https://example.com/rss.xml", "rss"),
+        ("https://example.com/atom.xml", "atom"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_dedupes_relative_and_absolute_links(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    html = """<html><head>
+    <link rel="alternate" type="application/rss+xml" href="/blog/feed.xml" />
+    <link rel="alternate" type="application/rss+xml" href="https://example.com/blog/feed.xml">
+    </head></html>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html)
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/blog/", user_agent="test")
+    assert candidates == [{"url": "https://example.com/blog/feed.xml", "type": "rss"}]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_resolves_against_redirect_target(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    html = '<html><head><link rel="alternate" type="application/rss+xml" href="/blog/feed.xml"></head></html>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.scheme == "http":
+            return httpx.Response(301, headers={"Location": "https://example.com/"})
+        return httpx.Response(200, text=html)
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("http://example.com/", user_agent="test")
+    assert candidates == [{"url": "https://example.com/blog/feed.xml", "type": "rss"}]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_honors_base_href(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    html = """<html><head><base href="https://example.com/">
+    <link rel="alternate" type="application/rss+xml" href="feed.xml">
+    </head></html>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/blog/post"
+        return httpx.Response(200, text=html)
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/blog/post", user_agent="test")
+    assert candidates == [{"url": "https://example.com/feed.xml", "type": "rss"}]
+
+
+@pytest.mark.asyncio
+async def test_discover_feeds_caps_candidate_count(monkeypatch):
+    from rss_mcp.feed_client import discover_feeds
+
+    links = "".join(
+        f'<link rel="alternate" type="application/rss+xml" href="/feed{i}.xml">'
+        for i in range(60)
+    )
+    html = f"<html><head>{links}</head></html>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html)
+
+    _install(monkeypatch, handler)
+    candidates = await discover_feeds("https://example.com/", user_agent="test")
+    assert len(candidates) == 50

@@ -4,6 +4,7 @@ import asyncio
 import io
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from typing import Literal
 from urllib.parse import urljoin
 
@@ -220,3 +221,116 @@ async def fetch_feed(
         last_modified=response_modified,
         entry_cap=entry_cap,
     )
+
+
+class _LinkCollector(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[tuple[str, str]] = []
+        self.base_href: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        parsed = {key: (value or "") for key, value in attrs}
+        if tag == "base":
+            if self.base_href is None:
+                href = parsed.get("href", "").strip()
+                if href:
+                    self.base_href = href
+            return
+        if tag != "link":
+            return
+        rel = parsed.get("rel", "").lower()
+        mime = parsed.get("type", "").lower()
+        href = parsed.get("href", "").strip()
+        if rel == "alternate" and href and mime in ("application/rss+xml", "application/atom+xml"):
+            self.links.append((href, "atom" if "atom" in mime else "rss"))
+
+
+_PROBE_PATHS = ("/feed", "/feed/", "/rss", "/rss.xml", "/atom.xml", "/index.xml", "/feed.xml")
+_MAX_CANDIDATES = 50
+
+
+async def _parse_feed_body(body: bytes) -> feedparser.FeedParserDict | None:
+    # BytesIO: feedparser.parse(bytes) opens a body that is an existing path.
+    parsed = await asyncio.to_thread(feedparser.parse, io.BytesIO(body))
+    if parsed.version or parsed.entries:
+        return parsed
+    return None
+
+
+def _feed_type(parsed: feedparser.FeedParserDict) -> str:
+    return "atom" if (parsed.version or "").startswith("atom") else "rss"
+
+
+async def discover_feeds(url: str, *, user_agent: str, timeout: float = 15.0) -> list[dict]:
+    """Find feed URLs for a site: advertised <link rel=alternate> tags first,
+    then common feed paths. Returns [{url, type, title?}] candidates."""
+    candidates: list[dict] = []
+    seen: set[str] = set()
+
+    def add(feed_url: str, feed_type: str | None, title: str | None) -> None:
+        if feed_url in seen or len(candidates) >= _MAX_CANDIDATES:
+            return
+        seen.add(feed_url)
+        item: dict = {"url": feed_url}
+        if feed_type:
+            item["type"] = feed_type
+        if title:
+            item["title"] = title
+        candidates.append(item)
+
+    try:
+        client_ctx = httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": user_agent},
+        )
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeEncodeError):
+        return []
+    async with client_ctx as client:
+
+        async def bounded_fetch(target: str) -> tuple[bytes, str] | None:
+            try:
+                async with client.stream("GET", target) as response:
+                    response.raise_for_status()
+                    body = await _read_limited(response)
+                    if body is None:
+                        return None
+                    return body, str(response.url)
+            except (httpx.HTTPError, httpx.InvalidURL, UnicodeEncodeError):
+                return None
+
+        fetched = await bounded_fetch(url)
+        if fetched is None:
+            return []
+        body, base = fetched
+        # feedparser is the authority on "is this a feed"; HTML yields None.
+        parsed = await _parse_feed_body(body)
+        if parsed is not None:
+            add(base, _feed_type(parsed), _text(parsed.feed.get("title")))
+            return candidates
+        collector = _LinkCollector()
+        try:
+            await asyncio.to_thread(collector.feed, body.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
+        doc_base = urljoin(base, collector.base_href) if collector.base_href else base
+        for href, feed_type in collector.links:
+            add(urljoin(doc_base, href), feed_type, None)
+        if candidates:
+            return candidates
+
+        async def probe(path: str) -> tuple[str, str, str | None] | None:
+            result = await bounded_fetch(urljoin(base, path))
+            if result is None:
+                return None
+            probe_body, probe_url = result
+            probe_parsed = await _parse_feed_body(probe_body)
+            if probe_parsed is None:
+                return None
+            return probe_url, _feed_type(probe_parsed), _text(probe_parsed.feed.get("title"))
+
+        for found in await asyncio.gather(*(probe(path) for path in _PROBE_PATHS)):
+            if found is not None:
+                add(*found)
+        return candidates
