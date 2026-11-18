@@ -31,3 +31,30 @@ jobs:
           python-version: "3.13"
       - run: uv sync
       - run: uv run pytest
+
+  postgres:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: rss_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra postgres
+      - run: uv run pytest tests/test_postgres.py
+        env:
+          RSS_MCP_TEST_PG_URL: postgresql://postgres:test@localhost:5432/rss_test

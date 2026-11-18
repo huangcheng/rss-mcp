@@ -51,3 +51,13 @@ def test_load_settings_auth_token_unset_is_none(monkeypatch):
 def test_load_settings_whitespace_auth_token_is_none(monkeypatch):
     monkeypatch.setenv("RSS_MCP_AUTH_TOKEN", "   ")
     assert load_settings().auth_token is None
+
+
+def test_load_settings_db_url(monkeypatch):
+    monkeypatch.setenv("RSS_MCP_DB_URL", " postgresql://u:p@h/db ")
+    assert load_settings().db_url == "postgresql://u:p@h/db"
+
+
+def test_load_settings_whitespace_db_url_is_none(monkeypatch):
+    monkeypatch.setenv("RSS_MCP_DB_URL", "   ")
+    assert load_settings().db_url is None

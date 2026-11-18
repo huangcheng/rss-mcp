@@ -19,6 +19,9 @@ Homepage = "https://github.com/huangcheng/rss-mcp"
 Repository = "https://github.com/huangcheng/rss-mcp"
 Issues = "https://github.com/huangcheng/rss-mcp/issues"
 
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
+
 [project.scripts]
 rss-mcp = "rss_mcp.__main__:main"
 rss-mcp-server = "rss_mcp.__main__:main"

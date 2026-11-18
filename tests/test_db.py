@@ -247,3 +247,49 @@ def _fts_ids(conn: sqlite3.Connection, query: str) -> list[int]:
         (query,),
     ).fetchall()
     return [row["rowid"] for row in rows]
+
+
+def test_connect_db_dispatches_sqlite_url(tmp_path: Path) -> None:
+    from rss_mcp.config import Settings
+    from rss_mcp.db import connect_db
+    from rss_mcp.store import Store
+
+    settings = Settings(
+        db_path=tmp_path / "ignored.db",
+        user_agent="rss-mcp/test",
+        db_url=f"sqlite:///{tmp_path / 'via-url.db'}",
+    )
+    conn = connect_db(settings)
+    init_db(conn)
+    store = Store(conn)
+    sub = store.add_subscription("https://example.com/sqlite-url.xml")
+    assert sub.id > 0
+    assert (tmp_path / "via-url.db").exists()
+    conn.close()
+
+
+def test_connect_db_accepts_postgres_scheme_alias(tmp_path: Path, monkeypatch) -> None:
+    from rss_mcp import db as db_module
+    from rss_mcp.config import Settings
+
+    sentinel = object()
+    monkeypatch.setattr(db_module.PostgresDialect, "connect", lambda self, url: sentinel)
+    settings = Settings(
+        db_path=tmp_path / "ignored.db", user_agent="rss-mcp/test", db_url="postgres://u:p@h/db"
+    )
+    assert db_module.connect_db(settings) is sentinel
+
+
+def test_connect_db_rejects_unknown_scheme_without_leaking_credentials(tmp_path: Path) -> None:
+    from rss_mcp.config import Settings
+    from rss_mcp.db import connect_db
+
+    settings = Settings(
+        db_path=tmp_path / "ignored.db",
+        user_agent="rss-mcp/test",
+        db_url="mysql://rss:s3cret@db.internal/rss",
+    )
+    with pytest.raises(ValueError) as exc:
+        connect_db(settings)
+    assert "mysql" in str(exc.value)
+    assert "s3cret" not in str(exc.value)

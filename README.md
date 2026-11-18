@@ -105,7 +105,8 @@ The container binds `0.0.0.0` internally (required for port mapping), so set `RS
 
 | Variable | Default |
 | --- | --- |
-| `RSS_MCP_DB` | `~/.local/share/rss-mcp/rss.db` |
+| `RSS_MCP_DB` | `~/.local/share/rss-mcp/rss.db` (SQLite path) |
+| `RSS_MCP_DB_URL` | unset; overrides `RSS_MCP_DB` — `sqlite:///path` or `postgresql://user:pass@host/db` |
 | `RSS_MCP_USER_AGENT` | `rss-mcp/0.1 (+https://github.com/huangcheng/rss-mcp)` |
 | `RSS_MCP_AUTH_TOKEN` | unset (HTTP bearer auth disabled) |
 | `RSS_MCP_AUTH_TOKENS` | unset (comma-separated extra tokens) |
@@ -116,6 +117,17 @@ The container binds `0.0.0.0` internally (required for port mapping), so set `RS
 | `RSS_MCP_RATE_LIMIT_PER_MINUTE` | `120` (`0` disables; HTTP only) |
 
 `list_entries` and `search_entries` use `limit` 20 when omitted and clamp to 0–100. Each fetch upserts at most 50 entries and sends stored `ETag` / `Last-Modified` when the feed has them.
+
+## Database engines
+
+SQLite is the default: one file, WAL mode, FTS5 full-text search, zero setup. PostgreSQL is supported for shared/central deployments:
+
+```bash
+uv tool install 'rss-mcp-server[postgres]'   # or: pip install 'rss-mcp-server[postgres]'
+RSS_MCP_DB_URL='postgresql://user:pass@host:5432/rss' rss-mcp --transport streamable-http
+```
+
+Both engines implement the same behavior: subscriptions, entries, read/star state, tag filtering, ranked full-text search with match snippets (FTS5 `bm25`/`snippet` on SQLite, `tsvector`/`ts_rank`/`ts_headline` on PostgreSQL), retention pruning, and cascade deletes. Diacritics are folded on both engines (SQLite's `unicode61` tokenizer; PostgreSQL's `unaccent` extension when the database role may create it — restricted deployments fall back to accent-sensitive `simple` matching). Schema creation and migrations run automatically at startup on either engine. The `postgres` extra is optional — the core package keeps zero database dependencies beyond the standard library.
 
 ## Tools
 

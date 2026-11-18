@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from datetime import datetime, timezone
+from typing import Any
 
+from rss_mcp.dialect import dialect_for
 from rss_mcp.models import Entry, EntryInput, Subscription
 
 _ENTRY_LIMIT_MAX = 100
@@ -94,7 +95,7 @@ def _entry_guid(item: EntryInput) -> str:
     return "title:" + digest
 
 
-def _entry_from_row(row: sqlite3.Row) -> Entry:
+def _entry_from_row(row: Any) -> Entry:
     keys = row.keys()
     raw_enclosures = row["enclosures"] if "enclosures" in keys else None
     return Entry(
@@ -115,19 +116,7 @@ def _entry_from_row(row: sqlite3.Row) -> Entry:
     )
 
 
-def _fts_match_query(query: str) -> str | None:
-    terms: list[str] = []
-    for raw in query.split():
-        token = raw.strip('"')
-        if not token:
-            continue
-        terms.append('"' + token.replace('"', '""') + '"')
-    if not terms:
-        return None
-    return " AND ".join(terms)
-
-
-def _subscription_from_row(row: sqlite3.Row) -> Subscription:
+def _subscription_from_row(row: Any) -> Subscription:
     raw_headers = row["headers"]
     return Subscription(
         id=row["id"],
@@ -148,8 +137,11 @@ def _subscription_from_row(row: sqlite3.Row) -> Subscription:
 
 
 class Store:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    """Engine-agnostic storage; SQL dialect differences live in the dialect layer."""
+
+    def __init__(self, conn: Any) -> None:
         self._conn = conn
+        self._dialect = dialect_for(conn)
 
     def add_subscription(
         self,
@@ -161,8 +153,9 @@ class Store:
     ) -> Subscription:
         normalized = url.strip()
         self._conn.execute(
-            """INSERT OR IGNORE INTO subscriptions (url, title, tags, created_at, user_agent, headers)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            f"""INSERT {self._dialect.insert_ignore} INTO subscriptions
+                   (url, title, tags, created_at, user_agent, headers)
+               VALUES (?, ?, ?, ?, ?, ?){self._dialect.conflict_nothing}""",
             (
                 normalized,
                 title,
@@ -193,7 +186,7 @@ class Store:
         sql = _SUBSCRIPTION_SQL
         params: list[object] = []
         if tag is not None:
-            sql += " WHERE EXISTS (SELECT 1 FROM json_each(s.tags) WHERE value = ?)"
+            sql += " WHERE " + self._dialect.tags_exists("s")
             params.append(tag)
         rows = self._conn.execute(sql + " ORDER BY s.id", params).fetchall()
         return [_subscription_from_row(row) for row in rows]
@@ -294,9 +287,10 @@ class Store:
 
     def upsert_entries(self, subscription_id: int, items: list[EntryInput]) -> int:
         written = 0
+        neq = self._dialect.null_safe_neq
         for item in items:
             cursor = self._conn.execute(
-                """INSERT INTO entries (
+                f"""INSERT INTO entries (
                        subscription_id, guid, url, title, author,
                        published_at, summary, content, fetched_at, enclosures
                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -309,18 +303,18 @@ class Store:
                        content = COALESCE(excluded.content, entries.content),
                        fetched_at = excluded.fetched_at,
                        enclosures = COALESCE(excluded.enclosures, entries.enclosures)
-                   WHERE entries.url IS NOT excluded.url
-                      OR entries.title IS NOT excluded.title
-                      OR entries.author IS NOT excluded.author
-                      OR entries.published_at IS NOT excluded.published_at
-                      OR entries.summary IS NOT excluded.summary
+                   WHERE entries.url {neq} excluded.url
+                      OR entries.title {neq} excluded.title
+                      OR entries.author {neq} excluded.author
+                      OR entries.published_at {neq} excluded.published_at
+                      OR entries.summary {neq} excluded.summary
                       OR (
                           excluded.content IS NOT NULL
-                          AND entries.content IS NOT excluded.content
+                          AND entries.content {neq} excluded.content
                       )
                       OR (
                           excluded.enclosures IS NOT NULL
-                          AND entries.enclosures IS NOT excluded.enclosures
+                          AND entries.enclosures {neq} excluded.enclosures
                       )""",
                 (
                     subscription_id,
@@ -364,7 +358,7 @@ class Store:
             f"""SELECT {_ENTRY_COLUMNS}
                 {_ENTRY_FROM}
                 {where}
-                ORDER BY e.published_at DESC, e.id DESC
+                ORDER BY e.published_at DESC NULLS LAST, e.id DESC
                 LIMIT ?""",
             params,
         ).fetchall()
@@ -416,30 +410,22 @@ class Store:
         unread_only: bool = False,
         limit: int = 20,
     ) -> list[Entry]:
-        match = _fts_match_query(query)
-        if match is None:
-            return []
-        clauses = ["entries_fts MATCH ?"]
-        params: list[object] = [match]
+        extra_clauses: list[str] = []
+        extra_params: list[Any] = []
         if subscription_id is not None:
-            clauses.append("e.subscription_id = ?")
-            params.append(subscription_id)
+            extra_clauses.append("e.subscription_id = ?")
+            extra_params.append(subscription_id)
         if unread_only:
-            clauses.append("es.read_at IS NULL")
-        params.append(_clamp_limit(limit))
+            extra_clauses.append("es.read_at IS NULL")
+        built = self._dialect.search_sql(
+            _ENTRY_COLUMNS, query, extra_clauses, extra_params, _clamp_limit(limit)
+        )
+        if built is None:
+            return []
+        sql, params = built
         try:
-            rows = self._conn.execute(
-                f"""SELECT {_ENTRY_COLUMNS},
-                           snippet(entries_fts, -1, '[', ']', '…', 12) AS snippet
-                    FROM entries AS e
-                    JOIN entries_fts ON entries_fts.rowid = e.id
-                    LEFT JOIN entry_state AS es ON es.entry_id = e.id
-                    WHERE {" AND ".join(clauses)}
-                    ORDER BY bm25(entries_fts), e.published_at DESC, e.id DESC
-                    LIMIT ?""",
-                params,
-            ).fetchall()
-        except sqlite3.OperationalError:
+            rows = self._conn.execute(sql, params).fetchall()
+        except self._dialect.search_errors:
             return []
         return [_entry_from_row(row) for row in rows]
 

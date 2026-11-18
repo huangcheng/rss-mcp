@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse
 
 from rss_mcp import __version__
 from rss_mcp.config import Settings, load_settings
-from rss_mcp.db import connect, init_db
+from rss_mcp.db import connect_db, init_db
 from rss_mcp.feed_client import fetch_feed
 from rss_mcp.models import Entry, Subscription
 from rss_mcp.opml import build_opml, parse_opml
@@ -193,8 +193,7 @@ async def _scheduler_loop(app: _App) -> None:
 def _app_lifespan(settings: Settings, holder: dict[str, _App]):
     @asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[_App]:
-        settings.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = connect(settings.db_path)
+        conn = connect_db(settings)
         try:
             init_db(conn)
             app = _App(settings=settings, store=Store(conn))
@@ -283,9 +282,9 @@ class _RateLimitMiddleware:
 async def _healthz(request: Request) -> JSONResponse:
     settings: Settings = request.app.state.settings
     try:
-        conn = connect(settings.db_path)
+        conn = connect_db(settings)
         try:
-            count = conn.execute("SELECT COUNT(*) FROM subscriptions").fetchone()[0]
+            count = conn.execute("SELECT COUNT(*) AS n FROM subscriptions").fetchone()["n"]
         finally:
             conn.close()
     except Exception:

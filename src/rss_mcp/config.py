@@ -32,6 +32,7 @@ def _optional_int_env(name: str) -> int | None:
 class Settings:
     db_path: Path
     user_agent: str
+    db_url: str | None = None
     default_limit: int = 20
     max_limit: int = 100
     fetch_entry_cap: int = 50
@@ -72,6 +73,7 @@ def load_settings() -> Settings:
     return Settings(
         db_path=db_path,
         user_agent=user_agent,
+        db_url=(os.environ.get("RSS_MCP_DB_URL") or "").strip() or None,
         auth_token=auth_token,
         auth_tokens=auth_tokens,
         fetch_concurrency=max(1, _int_env("RSS_MCP_FETCH_CONCURRENCY", 8)),

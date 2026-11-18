@@ -410,3 +410,12 @@ def test_list_and_search_entries_clamp_limit_at_100(store: Store) -> None:
     assert store.list_entries(limit=-3) == []
     assert store.search_entries("needle", limit=0) == []
     assert store.search_entries("needle", limit=-1) == []
+
+
+def test_upsert_null_to_value_updates_with_unchanged_title(store: Store) -> None:
+    # Pins NULL-safe inequality on SQLite: a previously-NULL field gaining a
+    # value must update even when every non-NULL field is unchanged.
+    sub = store.add_subscription("https://example.com/nullfill.xml")
+    assert store.upsert_entries(sub.id, [EntryInput(guid="g", title="Same")]) == 1
+    assert store.upsert_entries(sub.id, [EntryInput(guid="g", title="Same", summary="now set")]) == 1
+    assert store.list_entries(limit=10)[0].summary == "now set"
