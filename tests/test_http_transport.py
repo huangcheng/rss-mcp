@@ -247,3 +247,55 @@ async def test_modern_era_rejects_mismatched_headers_and_unsupported_version(
     error = unsupported.json()["error"]
     assert error["code"] == -32022
     assert "2026-07-28" in error["data"]["supported"]
+
+
+@pytest.mark.asyncio
+async def test_bearer_token_gates_both_protocol_eras(server_settings: Settings) -> None:
+    guarded = Settings(
+        db_path=server_settings.db_path,
+        user_agent=server_settings.user_agent,
+        auth_token="sekrit-token",
+    )
+    list_body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {"_meta": _MODERN_META},
+    }
+    async with _http_endpoint(guarded) as url:
+        async with httpx.AsyncClient() as http:
+            anonymous = await http.post(url, headers=_modern_headers("tools/list"), json=list_body)
+            wrong = await http.post(
+                url,
+                headers={**_modern_headers("tools/list"), "Authorization": "Bearer nope"},
+                json=list_body,
+            )
+            allowed = await http.post(
+                url,
+                headers={**_modern_headers("tools/list"), "Authorization": "Bearer sekrit-token"},
+                json=list_body,
+            )
+            legacy = await http.post(
+                url,
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Authorization": "Bearer sekrit-token",
+                },
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "clientInfo": {"name": "pytest", "version": "0"},
+                    },
+                },
+            )
+
+    assert anonymous.status_code == 401
+    assert wrong.status_code == 401
+    assert allowed.status_code == 200
+    assert [tool["name"] for tool in allowed.json()["result"]["tools"]] == TOOL_NAMES
+    assert legacy.status_code == 200
+    assert "mcp-session-id" in legacy.headers

@@ -55,7 +55,35 @@ The MCP endpoint is then `http://127.0.0.1:8000/mcp`. Hosts that support remote 
 }
 ```
 
-All sessions share one SQLite database (same `RSS_MCP_DB` setting). The endpoint serves both protocol eras: 2026-07-28 stateless per-request POSTs (with the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers and `_meta` envelope) and the legacy `initialize` handshake (up to 2025-11-25, with sessions) for older hosts. The server has no authentication: keep the default loopback bind, or put it behind a reverse proxy with auth before exposing it beyond localhost.
+All sessions share one SQLite database (same `RSS_MCP_DB` setting). The endpoint serves both protocol eras: 2026-07-28 stateless per-request POSTs (with the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers and `_meta` envelope) and the legacy `initialize` handshake (up to 2025-11-25, with sessions) for older hosts.
+
+Set `RSS_MCP_AUTH_TOKEN` to require `Authorization: Bearer <token>` on every HTTP request (both eras; stdio is unaffected). Hosts that support custom headers:
+
+```json
+{
+  "mcpServers": {
+    "rss-mcp": {
+      "url": "http://127.0.0.1:8000/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+Without a token the endpoint is unauthenticated: keep the default loopback bind, or put it behind a reverse proxy with auth before exposing it beyond localhost.
+
+## Docker
+
+The image runs the HTTP transport, stores the database in a `/data` volume, and runs as a non-root user:
+
+```bash
+docker build -t rss-mcp .
+docker run -d --name rss-mcp -p 127.0.0.1:8000:8000 \
+  -e RSS_MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+  -v rss-mcp-data:/data rss-mcp
+```
+
+The container binds `0.0.0.0` internally (required for port mapping), so set `RSS_MCP_AUTH_TOKEN` whenever the published port is reachable beyond your machine. Publishing to `127.0.0.1` as above keeps it local. Run exactly one container per database volume.
 
 ## Environment
 
@@ -63,6 +91,7 @@ All sessions share one SQLite database (same `RSS_MCP_DB` setting). The endpoint
 | --- | --- |
 | `RSS_MCP_DB` | `~/.local/share/rss-mcp/rss.db` |
 | `RSS_MCP_USER_AGENT` | `rss-mcp/0.1 (+https://github.com/huangcheng/rss-mcp)` |
+| `RSS_MCP_AUTH_TOKEN` | unset (HTTP bearer auth disabled) |
 
 `list_entries` and `search_entries` use `limit` 20 when omitted and clamp to 0–100. Each fetch upserts at most 50 entries and sends stored `ETag` / `Last-Modified` when the feed has them.
 

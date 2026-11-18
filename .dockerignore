@@ -1,0 +1,9 @@
+.git
+.venv
+.pytest_cache
+.qwen
+.superpowers
+dist
+docs
+tests
+uv.lock

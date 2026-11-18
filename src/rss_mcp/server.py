@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
@@ -9,6 +10,8 @@ from typing import Any
 from xml.etree.ElementTree import ParseError
 
 from mcp.server import MCPServer
+from mcp.server.auth.provider import AccessToken
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -148,13 +151,35 @@ _SDK_RESOURCE_AND_PROMPT_METHODS = (
 )
 
 
+class _StaticTokenVerifier:
+    """Accepts exactly one shared bearer token (RSS_MCP_AUTH_TOKEN)."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if secrets.compare_digest(token, self._token):
+            return AccessToken(token=token, client_id="rss-mcp", scopes=[])
+        return None
+
+
 def create_server(settings: Settings | None = None) -> MCPServer:
     resolved = load_settings() if settings is None else settings
+    auth: dict[str, Any] = {}
+    if resolved.auth_token:
+        # Static bearer mode has no OAuth issuer; AuthSettings still requires a
+        # URL. resource_server_url=None keeps the SDK from advertising OAuth
+        # protected-resource metadata that no authorization server backs.
+        auth = {
+            "auth": AuthSettings(issuer_url="http://localhost/", resource_server_url=None),
+            "token_verifier": _StaticTokenVerifier(resolved.auth_token),
+        }
     server = MCPServer(
         "rss-mcp",
         version=__version__,
         subscriptions=False,
         lifespan=_app_lifespan(resolved),
+        **auth,
     )
     handlers = server._lowlevel_server._request_handlers
     for method in _SDK_RESOURCE_AND_PROMPT_METHODS:

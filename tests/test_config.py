@@ -36,3 +36,18 @@ def test_load_settings_whitespace_rss_mcp_db_uses_default(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     s = load_settings()
     assert s.db_path == tmp_path / ".local" / "share" / "rss-mcp" / "rss.db"
+
+
+def test_load_settings_respects_rss_mcp_auth_token_env(monkeypatch):
+    monkeypatch.setenv("RSS_MCP_AUTH_TOKEN", "sekrit")
+    assert load_settings().auth_token == "sekrit"
+
+
+def test_load_settings_auth_token_unset_is_none(monkeypatch):
+    monkeypatch.delenv("RSS_MCP_AUTH_TOKEN", raising=False)
+    assert load_settings().auth_token is None
+
+
+def test_load_settings_whitespace_auth_token_is_none(monkeypatch):
+    monkeypatch.setenv("RSS_MCP_AUTH_TOKEN", "   ")
+    assert load_settings().auth_token is None

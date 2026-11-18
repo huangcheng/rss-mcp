@@ -14,6 +14,7 @@ class Settings:
     default_limit: int = 20
     max_limit: int = 100
     fetch_entry_cap: int = 50
+    auth_token: str | None = None
 
 
 def load_settings() -> Settings:
@@ -23,4 +24,5 @@ def load_settings() -> Settings:
     else:
         db_path = Path.home() / ".local" / "share" / "rss-mcp" / "rss.db"
     user_agent = os.environ.get("RSS_MCP_USER_AGENT") or _DEFAULT_USER_AGENT
-    return Settings(db_path=db_path, user_agent=user_agent)
+    auth_token = (os.environ.get("RSS_MCP_AUTH_TOKEN") or "").strip() or None
+    return Settings(db_path=db_path, user_agent=user_agent, auth_token=auth_token)
