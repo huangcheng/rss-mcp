@@ -341,3 +341,16 @@ class Store:
             (content, entry_id),
         )
         self._conn.commit()
+
+    def set_title_if_empty(self, subscription_id: int, title: str) -> None:
+        cleaned = title.strip()
+        if not cleaned:
+            return
+        self._conn.execute(
+            """UPDATE subscriptions
+               SET title = ?
+               WHERE id = ?
+                 AND (title IS NULL OR trim(title) = '')""",
+            (cleaned, subscription_id),
+        )
+        self._conn.commit()
