@@ -1,0 +1,35 @@
+services:
+  temporal:
+    image: temporalio/auto-setup:1.25.2
+    environment:
+      - DB=sqlite
+      - DB_FILENAME=/etc/temporal/temporal.db
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    volumes:
+      - temporal-data:/etc/temporal
+    restart: unless-stopped
+
+  temporal-ui:
+    image: temporalio/ui:2.30.0
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_UI_PORT=8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  worker:
+    build: ../../scheduler
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - RSS_MCP_URL=https://rss.wuhan.dev/mcp
+      - RSS_MCP_TOKEN=${RSS_MCP_TOKEN}
+      - RSS_MCP_REFRESH_INTERVAL=30
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+volumes:
+  temporal-data:

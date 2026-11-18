@@ -84,6 +84,10 @@ The HTTP app also serves an unauthenticated `GET /healthz` (JSON: status, versio
 - **Retention**: set `RSS_MCP_RETENTION_DAYS` to prune entries older than that many days on each scheduled refresh (starred entries are kept). Unset keeps everything.
 - **Per-feed overrides**: `add_subscription` / `update_subscription` accept `user_agent` and `headers` for feeds that block the default client.
 
+## Durable scheduling (Temporal)
+
+The built-in scheduler is in-process: its timer dies with the container. For durable periodic refresh, `scheduler/` is a separate Temporal worker that drives the MCP HTTP endpoint — a persistent Schedule fans out into one child workflow per feed, each with its own retry policy (1m→1h backoff, 5 attempts) and execution history. A failing feed never fails the batch, and everything survives restarts. See [scheduler/README.md](scheduler/README.md) and `deploy/temporal/docker-compose.yml` (Temporal server + UI + worker). When Temporal drives refresh, leave `RSS_MCP_REFRESH_INTERVAL` unset on the server to avoid double fetching.
+
 ## Docker
 
 The image runs the HTTP transport, stores the database in a `/data` volume, and runs as a non-root user:
