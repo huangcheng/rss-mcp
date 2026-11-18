@@ -29,16 +29,25 @@ def _title(element: ET.Element, url: str) -> str | None:
     return text
 
 
-def parse_opml(xml: str) -> list[tuple[str, str | None]]:
+def parse_opml(xml: str) -> list[tuple[str, str | None, list[str]]]:
     root = ET.fromstring(xml)
-    feeds: list[tuple[str, str | None]] = []
+    parents = {child: parent for parent in root.iter() for child in parent}
+    feeds: list[tuple[str, str | None, list[str]]] = []
     for element in root.iter():
         if _local(element.tag) != "outline":
             continue
         url = _attr(element, "xmlUrl")
         if url is None:
             continue
-        feeds.append((url, _title(element, url)))
+        tags: list[str] = []
+        ancestor = parents.get(element)
+        while ancestor is not None and _local(ancestor.tag) == "outline":
+            label = _attr(ancestor, "title") or _attr(ancestor, "text")
+            if label:
+                tags.append(label)
+            ancestor = parents.get(ancestor)
+        tags.reverse()
+        feeds.append((url, _title(element, url), tags))
     return feeds
 
 
@@ -47,12 +56,19 @@ def build_opml(subs: list[Subscription]) -> str:
     head = ET.SubElement(opml, "head")
     ET.SubElement(head, "title").text = "rss-mcp subscriptions"
     body = ET.SubElement(opml, "body")
+    categories: dict[str, ET.Element] = {}
     for sub in subs:
         url = sub.url.strip()
         title = (sub.title or "").strip() or None
         attrs = {"type": "rss", "xmlUrl": url, "text": title or url}
         if title is not None:
             attrs["title"] = title
-        ET.SubElement(body, "outline", attrs)
+        parent = body
+        if sub.tags:
+            tag = sub.tags[0]
+            if tag not in categories:
+                categories[tag] = ET.SubElement(body, "outline", {"text": tag, "title": tag})
+            parent = categories[tag]
+        ET.SubElement(parent, "outline", attrs)
     ET.indent(opml)
     return ET.tostring(opml, encoding="unicode", xml_declaration=True)

@@ -1,8 +1,8 @@
 # rss-mcp
 
-Agent-only MCP server for RSS and Atom. A host drives it over stdio (default) or Streamable HTTP. There is no GUI, TUI, or interactive CLI. Subscriptions, cached entries, unread state, and full-text search live in one local SQLite file. v1 is tools only: no resources, prompts, or MCP Apps.
+Agent-only MCP server for RSS and Atom. A host drives it over stdio (default) or Streamable HTTP. There is no GUI, TUI, or interactive CLI. Subscriptions, cached entries, unread state, and full-text search live in one local SQLite file. Eleven tools plus two read-only resources; no prompts or MCP Apps.
 
-Protocol: [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) (stdio or Streamable HTTP, tools) via the official Python SDK v2 (`mcp` ≥ 2.3).
+Protocol: [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) (stdio or Streamable HTTP; tools + resources) via the official Python SDK v2 (`mcp` ≥ 2.3).
 
 Requires Python 3.11+. Install from [PyPI](https://pypi.org/project/rss-mcp-server/): `uv tool install rss-mcp-server` gives you the `rss-mcp` and `rss-mcp-server` commands, or run it once with `uvx rss-mcp-server`.
 
@@ -59,7 +59,7 @@ The MCP endpoint is then `http://127.0.0.1:8000/mcp`. Hosts that support remote 
 
 All sessions share one SQLite database (same `RSS_MCP_DB` setting). The endpoint serves both protocol eras: 2026-07-28 stateless per-request POSTs (with the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers and `_meta` envelope) and the legacy `initialize` handshake (up to 2025-11-25, with sessions) for older hosts.
 
-Set `RSS_MCP_AUTH_TOKEN` to require `Authorization: Bearer <token>` on every HTTP request (both eras; stdio is unaffected). Hosts that support custom headers:
+Set `RSS_MCP_AUTH_TOKEN` (or `RSS_MCP_AUTH_TOKENS` for several comma-separated tokens) to require `Authorization: Bearer <token>` on every MCP request (both eras; stdio is unaffected). Hosts that support custom headers:
 
 ```json
 {
@@ -73,6 +73,16 @@ Set `RSS_MCP_AUTH_TOKEN` to require `Authorization: Bearer <token>` on every HTT
 ```
 
 Without a token the endpoint is unauthenticated: keep the default loopback bind, or put it behind a reverse proxy with auth before exposing it beyond localhost.
+
+The HTTP app also serves an unauthenticated `GET /healthz` (JSON: status, version, subscription count) for monitoring, and applies a per-client sliding-window rate limit (`RSS_MCP_RATE_LIMIT_PER_MINUTE`, default 120, `0` disables; keyed on bearer token or client IP, replies `429` when exceeded).
+
+## Server behavior
+
+- **Concurrent fetching**: `fetch_feed` without an id refreshes all subscriptions concurrently (`RSS_MCP_FETCH_CONCURRENCY`, default 8).
+- **Failure handling**: failed feeds record `last_error` and a failure count, then back off exponentially (60s doubling to 1h) in bulk fetches. After `RSS_MCP_DISABLE_AFTER_FAILURES` consecutive failures (default 5, `0` never) a feed is auto-disabled and skipped until fetched by id or re-enabled via `update_subscription`.
+- **Scheduled refresh**: set `RSS_MCP_REFRESH_INTERVAL` (seconds) to refresh all feeds in the background on that interval; unset means fetch-on-demand only.
+- **Retention**: set `RSS_MCP_RETENTION_DAYS` to prune entries older than that many days on each scheduled refresh (starred entries are kept). Unset keeps everything.
+- **Per-feed overrides**: `add_subscription` / `update_subscription` accept `user_agent` and `headers` for feeds that block the default client.
 
 ## Docker
 
@@ -92,23 +102,39 @@ The container binds `0.0.0.0` internally (required for port mapping), so set `RS
 | Variable | Default |
 | --- | --- |
 | `RSS_MCP_DB` | `~/.local/share/rss-mcp/rss.db` |
-| `RSS_MCP_USER_AGENT` | `rss-mcp/0.1 (+https://github.com/huangcheng/rss-mcp)` |
+| `RSS_MCP_USER_AGENT` | `rss-mcp/0.2 (+https://github.com/huangcheng/rss-mcp)` |
 | `RSS_MCP_AUTH_TOKEN` | unset (HTTP bearer auth disabled) |
+| `RSS_MCP_AUTH_TOKENS` | unset (comma-separated extra tokens) |
+| `RSS_MCP_FETCH_CONCURRENCY` | `8` |
+| `RSS_MCP_REFRESH_INTERVAL` | unset (no background refresh; seconds when set) |
+| `RSS_MCP_DISABLE_AFTER_FAILURES` | `5` (`0` never auto-disable) |
+| `RSS_MCP_RETENTION_DAYS` | unset (keep entries forever) |
+| `RSS_MCP_RATE_LIMIT_PER_MINUTE` | `120` (`0` disables; HTTP only) |
 
 `list_entries` and `search_entries` use `limit` 20 when omitted and clamp to 0–100. Each fetch upserts at most 50 entries and sends stored `ETag` / `Last-Modified` when the feed has them.
 
 ## Tools
 
-- `add_subscription` — Add a feed by URL. Repeating a URL returns the existing subscription.
+- `add_subscription` — Add a feed by URL with optional tags, per-feed `user_agent`/`headers`. Repeating a URL returns the existing subscription.
+- `update_subscription` — Edit title/tags/user_agent/headers/disabled. Omitted fields are unchanged; empty string/dict/list clears; `disabled=false` re-enables and resets failures.
 - `remove_subscription` — Delete a subscription and its cached entries.
-- `list_subscriptions` — List subscriptions with unread counts.
-- `fetch_feed` — Fetch one subscription, or every subscription when the id is omitted.
+- `list_subscriptions` — List subscriptions with unread counts and fetch health, optionally filtered by `tag`.
+- `fetch_feed` — Fetch one subscription, or every subscription concurrently when the id is omitted (disabled/backing-off feeds are skipped in bulk; fetching by id re-enables).
 - `list_entries` — List cached entries (article bodies omitted). Limit falls back to the server default and is clamped.
-- `read_entry` — Return one entry with full content. `fetch_full` replaces content only when article text is returned. `mark_read` marks it read.
-- `search_entries` — Full-text search over cached title, summary, and content (bodies omitted; use `read_entry` for full text).
-- `mark_entry` — Mark entries read or unread. Unknown ids are skipped.
-- `import_opml` — Add each OPML feed. Existing URLs are skipped.
-- `export_opml` — Export subscriptions as an OPML document.
+- `read_entry` — Return one entry with full content and enclosures. `fetch_full` replaces content only when article text is returned. `mark_read` marks it read.
+- `search_entries` — Full-text search over cached title, summary, and content, bm25-ranked with a match `snippet` (bodies omitted; use `read_entry` for full text).
+- `mark_entry` — Mark entries read/unread by `entry_ids`, or a whole subscription via `subscription_id`. Unknown ids are skipped.
+- `import_opml` — Add each OPML feed, preserving folder names as tags. Existing URLs are skipped.
+- `export_opml` — Export subscriptions as an OPML document, grouped by first tag.
+
+## Resources
+
+- `rss://subscriptions` — JSON: all subscriptions with unread counts and fetch health.
+- `rss://entries/unread` — JSON: most recent unread entries across subscriptions (bodies omitted).
+
+## CI and releases
+
+GitHub Actions runs the test suite on Python 3.11–3.13 (`.github/workflows/ci.yml`). Pushing a `v*` tag builds, secret-scans, and publishes to PyPI via **Trusted Publishing** (`.github/workflows/release.yml`) — no API tokens. One-time setup: on PyPI, add a pending trusted publisher for the project (owner `huangcheng`, repository `rss-mcp`, workflow `release.yml`, environment `pypi`).
 
 ## Live tests
 

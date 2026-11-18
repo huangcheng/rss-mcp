@@ -1,0 +1,28 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - run: uvx twine check dist/*
+      - name: Scan artifacts for secret material
+        run: |
+          if tar -xzOf dist/*.tar.gz --exclude='*/.github/*' | grep -a -q 'pypi-AgEI'; then
+            echo "token material found in sdist" >&2
+            exit 1
+          fi
+          if unzip -p dist/*.whl | grep -a -q 'pypi-AgEI'; then
+            echo "token material found in wheel" >&2
+            exit 1
+          fi
+      - uses: pypa/gh-action-pypi-publish@release/v1

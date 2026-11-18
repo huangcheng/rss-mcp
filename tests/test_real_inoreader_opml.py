@@ -46,10 +46,10 @@ def settings(tmp_path: Path) -> Settings:
 def test_parse_inoreader_opml_has_expected_shape(opml_xml: str) -> None:
     feeds = parse_opml(opml_xml)
     assert len(feeds) >= 50
-    urls = [u for u, _ in feeds]
+    urls = [u for u, _, _ in feeds]
     assert len(urls) == len(set(urls))
     assert all(u.startswith(("http://", "https://")) for u in urls)
-    titled = sum(1 for _, t in feeds if t)
+    titled = sum(1 for _, t, _ in feeds if t)
     assert titled / len(feeds) > 0.8
 
 
@@ -76,7 +76,7 @@ async def test_import_opml_via_mcp_then_list(
 
         exported = await client.call_tool("export_opml", {})
         round_trip = parse_opml(exported.structured_content["opml"])
-        assert {u for u, _ in round_trip} == {s["url"] for s in subs}
+        assert {u for u, _, _ in round_trip} == {s["url"] for s in subs}
 
 
 @pytest.mark.asyncio
@@ -87,13 +87,13 @@ async def test_live_fetch_sample_feeds_then_search_and_read(
     feeds = parse_opml(opml_xml)
     # Prefer https; take a spread across the list
     sample = [feeds[i] for i in (0, 7, 15, 30, 45, 60, min(78, len(feeds) - 1))]
-    sample = list(dict.fromkeys(sample))  # preserve order, dedupe
+    sample = list({url: (url, title, tags) for url, title, tags in sample}.values())
 
     conn = connect(settings.db_path)
     init_db(conn)
     store = Store(conn)
-    for url, title in sample:
-        store.add_subscription(url, title=title)
+    for url, title, tags in sample:
+        store.add_subscription(url, title=title, tags=tags or None)
 
     ok = not_modified = error = upserted = 0
     results: list[dict] = []
@@ -198,8 +198,8 @@ async def test_live_fetch_all_feeds_report(opml_xml: str, settings: Settings) ->
     conn = connect(settings.db_path)
     init_db(conn)
     store = Store(conn)
-    for url, title in feeds:
-        store.add_subscription(url, title=title)
+    for url, title, tags in feeds:
+        store.add_subscription(url, title=title, tags=tags or None)
 
     sem = asyncio.Semaphore(8)
     stats = {"ok": 0, "not_modified": 0, "error": 0, "upserted": 0}

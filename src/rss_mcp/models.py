@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -15,6 +15,10 @@ class Subscription:
     last_error: str | None
     created_at: str
     unread_count: int = 0
+    user_agent: str | None = None
+    headers: dict[str, str] | None = None
+    failure_count: int = 0
+    disabled: bool = False
 
 
 @dataclass
@@ -26,6 +30,7 @@ class EntryInput:
     published_at: str | None = None
     summary: str | None = None
     content: str | None = None
+    enclosures: list[dict] | None = None
 
 
 @dataclass
@@ -42,3 +47,5 @@ class Entry:
     fetched_at: str
     read_at: str | None
     starred: bool
+    enclosures: list[dict] = field(default_factory=list)
+    snippet: str | None = None

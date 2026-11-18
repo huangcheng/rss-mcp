@@ -71,6 +71,7 @@ async def test_fetch_feed_parses_rss_caps_entries_and_sends_validators(monkeypat
             published_at="2026-01-01T00:00:00Z",
             summary="Short summary",
             content="<p>Full content</p>",
+            enclosures=[],
         ),
         EntryInput(
             guid="rss-2",
@@ -80,6 +81,7 @@ async def test_fetch_feed_parses_rss_caps_entries_and_sends_validators(monkeypat
             published_at="2026-01-02T12:30:00Z",
             summary="Only summary",
             content=None,
+            enclosures=[],
         ),
     ]
 
@@ -118,6 +120,7 @@ async def test_fetch_feed_parses_atom_without_conditional_headers(monkeypatch):
             published_at="2026-02-03T04:05:06Z",
             summary="Atom summary",
             content="<p>Atom body</p>",
+            enclosures=[],
         ),
         EntryInput(
             guid="urn:atom:2",
@@ -127,6 +130,7 @@ async def test_fetch_feed_parses_atom_without_conditional_headers(monkeypatch):
             published_at="2026-03-04T05:06:07Z",
             summary="Later summary",
             content=None,
+            enclosures=[],
         ),
     ]
 
@@ -353,6 +357,7 @@ async def test_fetch_feed_keeps_entries_when_parser_reports_bozo(monkeypatch):
             published_at=None,
             summary=None,
             content=None,
+            enclosures=[],
         )
     ]
 
@@ -397,6 +402,7 @@ async def test_fetch_feed_maps_blank_fields_to_none(monkeypatch):
             published_at=None,
             summary=None,
             content=None,
+            enclosures=[],
         )
     ]
 

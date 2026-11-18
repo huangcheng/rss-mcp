@@ -20,6 +20,7 @@ _ENTRY_COLUMNS = """
     e.summary,
     e.content,
     e.fetched_at,
+    e.enclosures,
     es.read_at,
     COALESCE(es.starred, 0) AS starred
 """
@@ -40,6 +41,10 @@ SELECT
     s.last_fetched_at,
     s.last_error,
     s.created_at,
+    s.user_agent,
+    s.headers,
+    s.failure_count,
+    s.disabled,
     (
         SELECT COUNT(*)
         FROM entries AS e
@@ -90,6 +95,8 @@ def _entry_guid(item: EntryInput) -> str:
 
 
 def _entry_from_row(row: sqlite3.Row) -> Entry:
+    keys = row.keys()
+    raw_enclosures = row["enclosures"] if "enclosures" in keys else None
     return Entry(
         id=row["id"],
         subscription_id=row["subscription_id"],
@@ -103,6 +110,8 @@ def _entry_from_row(row: sqlite3.Row) -> Entry:
         fetched_at=row["fetched_at"],
         read_at=row["read_at"],
         starred=bool(row["starred"]),
+        enclosures=json.loads(raw_enclosures) if raw_enclosures else [],
+        snippet=row["snippet"] if "snippet" in keys else None,
     )
 
 
@@ -119,6 +128,7 @@ def _fts_match_query(query: str) -> str | None:
 
 
 def _subscription_from_row(row: sqlite3.Row) -> Subscription:
+    raw_headers = row["headers"]
     return Subscription(
         id=row["id"],
         url=row["url"],
@@ -130,6 +140,10 @@ def _subscription_from_row(row: sqlite3.Row) -> Subscription:
         last_error=row["last_error"],
         created_at=row["created_at"],
         unread_count=row["unread_count"],
+        user_agent=row["user_agent"],
+        headers=json.loads(raw_headers) if raw_headers else None,
+        failure_count=row["failure_count"],
+        disabled=bool(row["disabled"]),
     )
 
 
@@ -142,12 +156,21 @@ class Store:
         url: str,
         title: str | None = None,
         tags: list[str] | None = None,
+        user_agent: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> Subscription:
         normalized = url.strip()
         self._conn.execute(
-            """INSERT OR IGNORE INTO subscriptions (url, title, tags, created_at)
-               VALUES (?, ?, ?, ?)""",
-            (normalized, title, json.dumps(tags or []), _utc_now()),
+            """INSERT OR IGNORE INTO subscriptions (url, title, tags, created_at, user_agent, headers)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                normalized,
+                title,
+                json.dumps(tags or []),
+                _utc_now(),
+                user_agent,
+                json.dumps(headers) if headers else None,
+            ),
         )
         self._conn.commit()
         row = self._conn.execute(
@@ -166,9 +189,82 @@ class Store:
         self._conn.commit()
         return cursor.rowcount > 0
 
-    def list_subscriptions(self) -> list[Subscription]:
-        rows = self._conn.execute(_SUBSCRIPTION_SQL + " ORDER BY s.id").fetchall()
+    def list_subscriptions(self, tag: str | None = None) -> list[Subscription]:
+        sql = _SUBSCRIPTION_SQL
+        params: list[object] = []
+        if tag is not None:
+            sql += " WHERE EXISTS (SELECT 1 FROM json_each(s.tags) WHERE value = ?)"
+            params.append(tag)
+        rows = self._conn.execute(sql + " ORDER BY s.id", params).fetchall()
         return [_subscription_from_row(row) for row in rows]
+
+    def update_subscription(
+        self,
+        subscription_id: int,
+        *,
+        title: str | None = None,
+        tags: list[str] | None = None,
+        user_agent: str | None = None,
+        headers: dict[str, str] | None = None,
+        disabled: bool | None = None,
+    ) -> bool:
+        assignments: list[str] = []
+        params: list[object] = []
+        if title is not None:
+            assignments.append("title = ?")
+            params.append(title.strip() or None)
+        if tags is not None:
+            assignments.append("tags = ?")
+            params.append(json.dumps(tags))
+        if user_agent is not None:
+            assignments.append("user_agent = ?")
+            params.append(user_agent.strip() or None)
+        if headers is not None:
+            assignments.append("headers = ?")
+            params.append(json.dumps(headers) if headers else None)
+        if disabled is not None:
+            assignments.append("disabled = ?")
+            params.append(int(disabled))
+            if not disabled:
+                assignments.append("failure_count = 0")
+                assignments.append("last_error = NULL")
+        if not assignments:
+            return False
+        params.append(subscription_id)
+        cursor = self._conn.execute(
+            f"UPDATE subscriptions SET {', '.join(assignments)} WHERE id = ?",
+            params,
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def record_fetch_failure(self, subscription_id: int, error: str) -> int:
+        self._conn.execute(
+            """UPDATE subscriptions
+               SET last_error = ?, failure_count = failure_count + 1, last_fetched_at = ?
+               WHERE id = ?""",
+            (error, _utc_now(), subscription_id),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT failure_count FROM subscriptions WHERE id = ?",
+            (subscription_id,),
+        ).fetchone()
+        return int(row["failure_count"]) if row else 0
+
+    def reset_failures(self, subscription_id: int) -> None:
+        self._conn.execute(
+            "UPDATE subscriptions SET failure_count = 0, last_error = NULL WHERE id = ?",
+            (subscription_id,),
+        )
+        self._conn.commit()
+
+    def set_disabled(self, subscription_id: int, disabled: bool) -> None:
+        self._conn.execute(
+            "UPDATE subscriptions SET disabled = ? WHERE id = ?",
+            (int(disabled), subscription_id),
+        )
+        self._conn.commit()
 
     def get_subscription(self, subscription_id: int) -> Subscription | None:
         row = self._conn.execute(
@@ -202,8 +298,8 @@ class Store:
             cursor = self._conn.execute(
                 """INSERT INTO entries (
                        subscription_id, guid, url, title, author,
-                       published_at, summary, content, fetched_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       published_at, summary, content, fetched_at, enclosures
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(subscription_id, guid) DO UPDATE SET
                        url = excluded.url,
                        title = excluded.title,
@@ -211,7 +307,8 @@ class Store:
                        published_at = excluded.published_at,
                        summary = excluded.summary,
                        content = COALESCE(excluded.content, entries.content),
-                       fetched_at = excluded.fetched_at
+                       fetched_at = excluded.fetched_at,
+                       enclosures = COALESCE(excluded.enclosures, entries.enclosures)
                    WHERE entries.url IS NOT excluded.url
                       OR entries.title IS NOT excluded.title
                       OR entries.author IS NOT excluded.author
@@ -220,6 +317,10 @@ class Store:
                       OR (
                           excluded.content IS NOT NULL
                           AND entries.content IS NOT excluded.content
+                      )
+                      OR (
+                          excluded.enclosures IS NOT NULL
+                          AND entries.enclosures IS NOT excluded.enclosures
                       )""",
                 (
                     subscription_id,
@@ -231,6 +332,7 @@ class Store:
                     item.summary,
                     item.content,
                     _utc_now(),
+                    json.dumps(item.enclosures) if item.enclosures else None,
                 ),
             )
             if cursor.rowcount > 0:
@@ -327,7 +429,8 @@ class Store:
         params.append(_clamp_limit(limit))
         try:
             rows = self._conn.execute(
-                f"""SELECT {_ENTRY_COLUMNS}
+                f"""SELECT {_ENTRY_COLUMNS},
+                           snippet(entries_fts, -1, '[', ']', '…', 12) AS snippet
                     FROM entries AS e
                     JOIN entries_fts ON entries_fts.rowid = e.id
                     LEFT JOIN entry_state AS es ON es.entry_id = e.id
@@ -339,6 +442,23 @@ class Store:
         except sqlite3.OperationalError:
             return []
         return [_entry_from_row(row) for row in rows]
+
+    def mark_subscription_entries(self, subscription_id: int, read: bool) -> int:
+        rows = self._conn.execute(
+            "SELECT id FROM entries WHERE subscription_id = ?",
+            (subscription_id,),
+        ).fetchall()
+        return self.mark_entries([row["id"] for row in rows], read)
+
+    def prune_entries(self, cutoff_iso: str) -> int:
+        cursor = self._conn.execute(
+            """DELETE FROM entries
+               WHERE COALESCE(published_at, fetched_at) < ?
+                 AND id NOT IN (SELECT entry_id FROM entry_state WHERE starred = 1)""",
+            (cutoff_iso,),
+        )
+        self._conn.commit()
+        return cursor.rowcount
 
     def update_entry_content(self, entry_id: int, content: str) -> None:
         self._conn.execute(

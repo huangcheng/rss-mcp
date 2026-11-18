@@ -77,6 +77,31 @@ def _resolve_url(value: object, base_url: str) -> str | None:
     return _text(urljoin(base_url, raw))
 
 
+def _enclosures(entry: feedparser.FeedParserDict, base_url: str) -> list[dict]:
+    found: list[dict] = []
+    seen: set[str] = set()
+    candidates = list(entry.get("enclosures") or [])
+    candidates.extend(
+        link for link in (entry.get("links") or []) if link.get("rel") == "enclosure"
+    )
+    for raw in candidates:
+        if not isinstance(raw, dict):
+            continue
+        url = _resolve_url(raw.get("href") or raw.get("url"), base_url)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        item: dict = {"url": url}
+        mime = _text(raw.get("type"))
+        if mime:
+            item["type"] = mime
+        length = _text(raw.get("length"))
+        if length:
+            item["length"] = length
+        found.append(item)
+    return found
+
+
 def _entry(entry: feedparser.FeedParserDict, base_url: str) -> EntryInput:
     return EntryInput(
         guid=_text(entry.get("id")),
@@ -86,6 +111,7 @@ def _entry(entry: feedparser.FeedParserDict, base_url: str) -> EntryInput:
         published_at=_published_at(entry),
         summary=_text(entry.get("summary")),
         content=_content(entry),
+        enclosures=_enclosures(entry, base_url),
     )
 
 
@@ -143,21 +169,25 @@ async def fetch_feed(
     user_agent: str,
     entry_cap: int,
     timeout: float = 30.0,
+    headers: dict[str, str] | None = None,
 ) -> FetchResult:
     sent_etag = _text(etag)
     sent_modified = _text(last_modified)
-    headers: dict[str, str] = {}
+    request_headers: dict[str, str] = {}
     if sent_etag is not None:
-        headers["If-None-Match"] = sent_etag
+        request_headers["If-None-Match"] = sent_etag
     if sent_modified is not None:
-        headers["If-Modified-Since"] = sent_modified
+        request_headers["If-Modified-Since"] = sent_modified
+    client_headers = {"User-Agent": user_agent}
+    if headers:
+        client_headers.update(headers)
     try:
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
-            headers={"User-Agent": user_agent},
+            headers=client_headers,
         ) as client:
-            async with client.stream("GET", url, headers=headers) as response:
+            async with client.stream("GET", url, headers=request_headers) as response:
                 response_etag = _header(response, "etag")
                 response_modified = _header(response, "last-modified")
                 if response.status_code == 304:

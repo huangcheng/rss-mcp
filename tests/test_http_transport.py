@@ -14,6 +14,7 @@ from rss_mcp.config import Settings
 
 TOOL_NAMES = [
     "add_subscription",
+    "update_subscription",
     "remove_subscription",
     "list_subscriptions",
     "fetch_feed",
@@ -38,16 +39,35 @@ def test_main_defaults_to_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
     from rss_mcp import server
 
     recorder = _RunRecorder()
-    monkeypatch.setattr(server, "create_server", lambda: recorder)
+    monkeypatch.setattr(server, "create_server", lambda settings: recorder)
     server.main([])
     assert recorder.calls == [{}]
+
+
+def _patch_http_main(monkeypatch: pytest.MonkeyPatch) -> dict:
+    from rss_mcp import server
+
+    recorded: dict = {}
+    sentinel_app = object()
+    monkeypatch.setattr(server, "create_server", lambda settings: "server-instance")
+
+    def fake_build(server_arg, settings_arg, *, path, host):
+        recorded["build"] = {"server": server_arg, "path": path, "host": host}
+        return sentinel_app
+
+    def fake_run(app, **kwargs):
+        recorded["run"] = {"app": app, **kwargs}
+
+    monkeypatch.setattr(server, "build_http_app", fake_build)
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    recorded["sentinel"] = sentinel_app
+    return recorded
 
 
 def test_main_streamable_http_passes_host_port_path(monkeypatch: pytest.MonkeyPatch) -> None:
     from rss_mcp import server
 
-    recorder = _RunRecorder()
-    monkeypatch.setattr(server, "create_server", lambda: recorder)
+    recorded = _patch_http_main(monkeypatch)
     server.main(
         [
             "--transport",
@@ -60,36 +80,23 @@ def test_main_streamable_http_passes_host_port_path(monkeypatch: pytest.MonkeyPa
             "/rss",
         ]
     )
-    assert recorder.calls == [
-        {
-            "transport": "streamable-http",
-            "host": "0.0.0.0",
-            "port": 9123,
-            "streamable_http_path": "/rss",
-        }
-    ]
+    assert recorded["build"] == {"server": "server-instance", "path": "/rss", "host": "0.0.0.0"}
+    assert recorded["run"] == {"app": recorded["sentinel"], "host": "0.0.0.0", "port": 9123}
 
 
 def test_main_streamable_http_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     from rss_mcp import server
 
-    recorder = _RunRecorder()
-    monkeypatch.setattr(server, "create_server", lambda: recorder)
+    recorded = _patch_http_main(monkeypatch)
     server.main(["--transport", "streamable-http"])
-    assert recorder.calls == [
-        {
-            "transport": "streamable-http",
-            "host": "127.0.0.1",
-            "port": 8000,
-            "streamable_http_path": "/mcp",
-        }
-    ]
+    assert recorded["build"] == {"server": "server-instance", "path": "/mcp", "host": "127.0.0.1"}
+    assert recorded["run"] == {"app": recorded["sentinel"], "host": "127.0.0.1", "port": 8000}
 
 
 def test_main_rejects_unknown_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     from rss_mcp import server
 
-    def fail() -> _RunRecorder:
+    def fail(settings) -> _RunRecorder:
         pytest.fail("create_server must not run for an invalid transport")
 
     monkeypatch.setattr(server, "create_server", fail)

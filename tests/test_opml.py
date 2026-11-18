@@ -24,10 +24,10 @@ def _sub(url: str, title: str | None, id: int) -> Subscription:
 def test_parse_opml_reads_nested_feeds_and_skips_folders():
     # Drops a nested feed, keeps a folder, or leaves xmlUrl whitespace unstripped.
     assert parse_opml(FIXTURE) == [
-        ("https://example.com/feed.xml", "Example"),
-        ("https://example.com/untitled.xml", None),
-        ("https://example.com/text-only.xml", "Only Text"),
-        ("https://example.com/atom.xml?a=1&b=2", "Tom & Jerry"),
+        ("https://example.com/feed.xml", "Example", ["News"]),
+        ("https://example.com/untitled.xml", None, ["News"]),
+        ("https://example.com/text-only.xml", "Only Text", []),
+        ("https://example.com/atom.xml?a=1&b=2", "Tom & Jerry", []),
     ]
 
 
@@ -56,7 +56,22 @@ def test_opml_round_trip_preserves_url_and_title():
         _sub("https://example.com/atom.xml?a=1&b=2", "Tom & Jerry", 3),
     ]
     assert parse_opml(build_opml(subs)) == [
-        ("https://example.com/feed.xml", "Example"),
-        ("https://example.com/untitled.xml", None),
-        ("https://example.com/atom.xml?a=1&b=2", "Tom & Jerry"),
+        ("https://example.com/feed.xml", "Example", ["ignored"]),
+        ("https://example.com/untitled.xml", None, ["ignored"]),
+        ("https://example.com/atom.xml?a=1&b=2", "Tom & Jerry", ["ignored"]),
     ]
+
+
+def test_build_opml_groups_by_first_tag():
+    tech = _sub("https://example.com/tech.xml", "Tech", 1)
+    tech.tags = ["技术", "blog"]
+    news = _sub("https://example.com/news.xml", "News", 2)
+    news.tags = ["资讯"]
+    plain = _sub("https://example.com/plain.xml", None, 3)
+    plain.tags = []
+    root = ET.fromstring(build_opml([tech, news, plain]))
+    body = root.find("body")
+    folders = [el for el in body if not el.get("xmlUrl")]
+    assert [el.get("text") for el in folders] == ["技术", "资讯"]
+    assert folders[0].find("outline").get("xmlUrl") == "https://example.com/tech.xml"
+    assert body[-1].get("xmlUrl") == "https://example.com/plain.xml"

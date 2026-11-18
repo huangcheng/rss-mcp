@@ -15,6 +15,7 @@ from rss_mcp.store import Store
 
 TOOL_NAMES = [
     "add_subscription",
+    "update_subscription",
     "remove_subscription",
     "list_subscriptions",
     "fetch_feed",
@@ -59,23 +60,23 @@ async def _ok(client: Client, name: str, arguments: dict | None = None) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_tools_list_is_exactly_the_ten_tools_in_table_order(server_settings: Settings) -> None:
+async def test_tools_list_is_exactly_the_eleven_tools_in_table_order(server_settings: Settings) -> None:
     # Drops a tool, renames one, or lists them in a different order.
     from rss_mcp.server import create_server
 
     server = create_server(server_settings)
     assert server.name == "rss-mcp"
-    assert server.version == "0.1.1"
+    assert server.version == "0.2.0"
     async with Client(server) as client:
         listed = await client.list_tools()
         caps = client.server_capabilities
         info = client.server_info
     assert [tool.name for tool in listed.tools] == TOOL_NAMES
     assert caps.tools is not None
-    assert caps.resources is None
+    assert caps.resources is not None
     assert caps.prompts is None
     assert info is not None
-    assert info.version == "0.1.1"
+    assert info.version == "0.2.0"
     # subscriptions=False: hosts should not expect a live tools listChanged stream
     assert "subscriptions/listen" not in server._lowlevel_server._request_handlers
 
@@ -222,6 +223,7 @@ async def test_fetch_feed_ok_upserts_clears_error_and_fills_blank_title(
         "etag": "old-etag",
         "last_modified": "old-modified",
         "user_agent": "rss-mcp/test",
+        "headers": None,
         "entry_cap": 50,
         "timeout": 30.0,
     }
@@ -229,6 +231,7 @@ async def test_fetch_feed_ok_upserts_clears_error_and_fills_blank_title(
         "ok": 1,
         "not_modified": 0,
         "error": 0,
+        "skipped": 0,
         "upserted": 1,
         "results": [
             {"subscription_id": sub.id, "status": "ok", "upserted": 1, "error": None},
@@ -273,7 +276,7 @@ async def test_fetch_feed_ok_keeps_an_existing_title(
 async def test_fetch_feed_error_keeps_validators_and_records_last_error(
     server_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Overwrites etag/last_modified with the error result's Nones, or refreshes last_fetched_at.
+    # Overwrites etag/last_modified with the error result's Nones.
     from rss_mcp import server
 
     conn, store = _open_store(server_settings)
@@ -308,11 +311,17 @@ async def test_fetch_feed_error_keeps_validators_and_records_last_error(
     assert summary["error"] == 1
     assert summary["upserted"] == 0
     assert summary["results"] == [
-        {"subscription_id": sub.id, "status": "error", "upserted": 0, "error": "HTTP 500"},
+        {
+            "subscription_id": sub.id,
+            "status": "error",
+            "upserted": 0,
+            "error": "HTTP 500",
+            "disabled": False,
+        },
     ]
     assert stored.etag == "keep-etag"
     assert stored.last_modified == "keep-modified"
-    assert stored.last_fetched_at == "2000-01-01T00:00:00Z"
+    assert stored.last_fetched_at != "2000-01-01T00:00:00Z"
     assert stored.last_error == "HTTP 500"
     assert stored.title == "Kept"
     assert [entry["guid"] for entry in listed["entries"]] == ["g1"]
