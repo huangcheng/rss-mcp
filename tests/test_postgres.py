@@ -256,3 +256,37 @@ def test_diacritic_folding_matches_sqlite(pg_store):
     hits = pg_store.search_entries("cafe")
     assert len(hits) == 1
     assert hits[0].guid == "c1"
+
+
+def test_cross_feed_dedup_on_postgres(pg_store):
+    a = pg_store.add_subscription("https://a.example/feed.xml")
+    b = pg_store.add_subscription("https://b.example/feed.xml")
+    c = pg_store.add_subscription("https://c.example/feed.xml")
+    pg_store.upsert_entries(
+        a.id,
+        [EntryInput(guid="a1", url="https://news.example/story?utm_source=rss", title="Story",
+                    published_at="2026-11-01T00:00:00Z")],
+    )
+    pg_store.upsert_entries(
+        b.id,
+        [EntryInput(guid="b1", url="https://news.example/story", title="Story",
+                    published_at="2026-11-01T00:00:00Z")],
+    )
+    pg_store.upsert_entries(
+        c.id,
+        [EntryInput(guid="c1", url="https://news.example/story", title="Story",
+                    published_at="2026-11-01T00:00:00Z")],
+    )
+    visible = pg_store.list_entries(limit=10)
+    assert len(visible) == 1
+    assert pg_store.get_subscription(b.id).unread_count == 0
+    everything = pg_store.list_entries(limit=10, include_duplicates=True)
+    assert len(everything) == 3
+    assert len(pg_store.search_entries("Story")) == 1
+
+    # Deleting the keeper must re-elect, not reveal all copies.
+    pg_store.remove_subscription(a.id)
+    revealed = pg_store.list_entries(limit=10)
+    assert len(revealed) == 1
+    assert revealed[0].subscription_id in (b.id, c.id)
+    assert revealed[0].duplicate_of is None

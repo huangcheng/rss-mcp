@@ -106,6 +106,41 @@ async def test_discover_feed_tool_wires_user_agent_and_shape(server_settings: Se
 
 
 @pytest.mark.asyncio
+async def test_list_and_search_tools_hide_duplicates_unless_requested(
+    server_settings: Settings, monkeypatch
+) -> None:
+    from rss_mcp import server
+    from rss_mcp.feed_client import FetchResult
+    from rss_mcp.models import EntryInput
+
+    async def fake_fetch(url: str, **kwargs) -> FetchResult:
+        return FetchResult(
+            status="ok",
+            entries=[EntryInput(guid="shared", url="https://x.example/s", title="Story")],
+            etag=None,
+            last_modified=None,
+            feed_title=None,
+            error=None,
+        )
+
+    monkeypatch.setattr(server, "fetch_feed", fake_fetch)
+    async with Client(server.create_server(server_settings)) as client:
+        a = await client.call_tool("add_subscription", {"url": "https://a.example/f"})
+        b = await client.call_tool("add_subscription", {"url": "https://b.example/f"})
+        await client.call_tool("fetch_feed", {"subscription_id": a.structured_content["id"]})
+        await client.call_tool("fetch_feed", {"subscription_id": b.structured_content["id"]})
+        default_list = await client.call_tool("list_entries", {})
+        full_list = await client.call_tool("list_entries", {"include_duplicates": True})
+        default_search = await client.call_tool("search_entries", {"query": "Story"})
+        full_search = await client.call_tool("search_entries", {"query": "Story", "include_duplicates": True})
+
+    assert len(default_list.structured_content["entries"]) == 1
+    assert len(full_list.structured_content["entries"]) == 2
+    assert len(default_search.structured_content["entries"]) == 1
+    assert len(full_search.structured_content["entries"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_add_subscription_round_trips_through_list(server_settings: Settings) -> None:
     # Omits tags, unread_count, or fails to create the parent directory of the db.
     from rss_mcp.server import create_server

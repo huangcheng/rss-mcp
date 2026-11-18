@@ -49,3 +49,4 @@ class Entry:
     starred: bool
     enclosures: list[dict] = field(default_factory=list)
     snippet: str | None = None
+    duplicate_of: int | None = None

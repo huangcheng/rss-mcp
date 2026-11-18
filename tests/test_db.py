@@ -54,6 +54,8 @@ def test_init_db_creates_tables(tmp_path: Path) -> None:
         "content",
         "fetched_at",
         "enclosures",
+        "canonical_url",
+        "duplicate_of",
     ]
     assert columns("entry_state") == ["entry_id", "read_at", "starred"]
 
@@ -171,7 +173,7 @@ def test_init_db_migrates_0_1_schema(tmp_path: Path) -> None:
     sub_columns = {row["name"] for row in migrated.execute("PRAGMA table_info(subscriptions)")}
     entry_columns = {row["name"] for row in migrated.execute("PRAGMA table_info(entries)")}
     assert {"user_agent", "headers", "failure_count", "disabled"} <= sub_columns
-    assert "enclosures" in entry_columns
+    assert {"enclosures", "canonical_url", "duplicate_of"} <= entry_columns
     row = migrated.execute("SELECT failure_count, disabled FROM subscriptions").fetchone()
     assert row["failure_count"] == 0
     assert row["disabled"] == 0

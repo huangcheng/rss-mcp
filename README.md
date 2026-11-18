@@ -136,9 +136,9 @@ Both engines implement the same behavior: subscriptions, entries, read/star stat
 - `remove_subscription` — Delete a subscription and its cached entries.
 - `list_subscriptions` — List subscriptions with unread counts and fetch health, optionally filtered by `tag`.
 - `fetch_feed` — Fetch one subscription, or every subscription concurrently when the id is omitted (disabled/backing-off feeds are skipped in bulk; fetching by id re-enables).
-- `list_entries` — List cached entries (article bodies omitted). Limit falls back to the server default and is clamped.
+- `list_entries` — List cached entries (article bodies omitted). Cross-feed duplicates are hidden by default; `include_duplicates` shows them. Limit falls back to the server default and is clamped.
 - `read_entry` — Return one entry with full content and enclosures. `fetch_full` replaces content only when article text is returned. `mark_read` marks it read.
-- `search_entries` — Full-text search over cached title, summary, and content, bm25-ranked with a match `snippet` (bodies omitted; use `read_entry` for full text).
+- `search_entries` — Full-text search over cached title, summary, and content, bm25-ranked with a match `snippet` (bodies omitted; use `read_entry` for full text). Cross-feed duplicates are hidden by default; `include_duplicates` shows them.
 - `mark_entry` — Mark entries read/unread by `entry_ids`, or a whole subscription via `subscription_id`. Unknown ids are skipped.
 - `import_opml` — Add each OPML feed, preserving folder names as tags. Existing URLs are skipped.
 - `export_opml` — Export subscriptions as an OPML document, grouped by first tag.
@@ -147,7 +147,9 @@ Both engines implement the same behavior: subscriptions, entries, read/star stat
 ## Resources
 
 - `rss://subscriptions` — JSON: all subscriptions with unread counts and fetch health.
-- `rss://entries/unread` — JSON: most recent unread entries across subscriptions (bodies omitted).
+- `rss://entries/unread` — JSON: most recent unread entries across subscriptions (bodies omitted, cross-feed duplicates excluded).
+
+**Cross-feed dedup**: the same article syndicated by several feeds is stored once per feed but shown once overall — entries are matched by normalized URL (scheme unified to https, tracking params dropped) or normalized title within a 30-day window, and the earliest copy wins. Unread counts exclude hidden copies. Deleting the winning copy re-elects the next one.
 
 ## CI and releases
 

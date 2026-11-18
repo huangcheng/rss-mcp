@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from rss_mcp.canon import canonical_key
 from rss_mcp.dialect import dialect_for
 from rss_mcp.models import Entry, EntryInput, Subscription
 
 _ENTRY_LIMIT_MAX = 100
+_DEDUP_WINDOW_DAYS = 30
 
 _ENTRY_COLUMNS = """
     e.id,
@@ -22,6 +24,7 @@ _ENTRY_COLUMNS = """
     e.content,
     e.fetched_at,
     e.enclosures,
+    e.duplicate_of,
     es.read_at,
     COALESCE(es.starred, 0) AS starred
 """
@@ -52,6 +55,7 @@ SELECT
         LEFT JOIN entry_state AS es ON es.entry_id = e.id
         WHERE e.subscription_id = s.id
           AND es.read_at IS NULL
+          AND e.duplicate_of IS NULL
     ) AS unread_count
 FROM subscriptions AS s
 """
@@ -113,6 +117,7 @@ def _entry_from_row(row: Any) -> Entry:
         starred=bool(row["starred"]),
         enclosures=json.loads(raw_enclosures) if raw_enclosures else [],
         snippet=row["snippet"] if "snippet" in keys else None,
+        duplicate_of=row["duplicate_of"] if "duplicate_of" in keys else None,
     )
 
 
@@ -142,6 +147,45 @@ class Store:
     def __init__(self, conn: Any) -> None:
         self._conn = conn
         self._dialect = dialect_for(conn)
+        self._backfill_canonical_keys()
+        self._reelect_keepers()
+
+    def _backfill_canonical_keys(self) -> None:
+        rows = self._conn.execute(
+            "SELECT id, url, title FROM entries WHERE canonical_url IS NULL"
+        ).fetchall()
+        if not rows:
+            return
+        # Sentinel '' for keyless rows so the NULL scan converges; no real
+        # canonical_key() result is ever empty.
+        updates = [(canonical_key(row["url"], row["title"]) or "", row["id"]) for row in rows]
+        self._conn.executemany("UPDATE entries SET canonical_url = ? WHERE id = ?", updates)
+        self._conn.commit()
+
+    def _reelect_keepers(self) -> None:
+        # After a keeper dies (FK SET NULL) several copies can be revealed at
+        # once; re-elect the earliest surviving cross-feed copy per key. URL
+        # identity is authoritative here, so no time window is applied.
+        self._conn.execute(
+            """UPDATE entries SET duplicate_of = (
+                   SELECT MIN(e2.id) FROM entries AS e2
+                   WHERE e2.canonical_url = entries.canonical_url
+                     AND e2.id < entries.id
+                     AND e2.duplicate_of IS NULL
+                     AND e2.subscription_id != entries.subscription_id
+               )
+               WHERE duplicate_of IS NULL
+                 AND canonical_url IS NOT NULL
+                 AND canonical_url != ''
+                 AND EXISTS (
+                   SELECT 1 FROM entries AS e2
+                   WHERE e2.canonical_url = entries.canonical_url
+                     AND e2.id < entries.id
+                     AND e2.duplicate_of IS NULL
+                     AND e2.subscription_id != entries.subscription_id
+                 )"""
+        )
+        self._conn.commit()
 
     def add_subscription(
         self,
@@ -180,6 +224,8 @@ class Store:
             (subscription_id,),
         )
         self._conn.commit()
+        if cursor.rowcount > 0:
+            self._reelect_keepers()
         return cursor.rowcount > 0
 
     def list_subscriptions(self, tag: str | None = None) -> list[Subscription]:
@@ -285,15 +331,43 @@ class Store:
         )
         self._conn.commit()
 
+    def _find_duplicate_keeper(self, subscription_id: int, item: EntryInput, key: str | None) -> int | None:
+        if key is None:
+            return None
+        anchor_dt = datetime.now(timezone.utc)
+        if item.published_at:
+            try:
+                anchor_dt = datetime.strptime(item.published_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                pass
+        window = timedelta(days=_DEDUP_WINDOW_DAYS)
+        lo = (anchor_dt - window).strftime("%Y-%m-%dT%H:%M:%SZ")
+        hi = (anchor_dt + window).strftime("%Y-%m-%dT%H:%M:%SZ")
+        row = self._conn.execute(
+            """SELECT id FROM entries
+               WHERE canonical_url = ?
+                 AND subscription_id != ?
+                 AND duplicate_of IS NULL
+                 AND COALESCE(published_at, fetched_at) BETWEEN ? AND ?
+               ORDER BY id LIMIT 1""",
+            (key, subscription_id, lo, hi),
+        ).fetchone()
+        return row["id"] if row is not None else None
+
     def upsert_entries(self, subscription_id: int, items: list[EntryInput]) -> int:
         written = 0
         neq = self._dialect.null_safe_neq
         for item in items:
+            key = canonical_key(item.url, item.title)
+            duplicate_of = self._find_duplicate_keeper(subscription_id, item, key)
             cursor = self._conn.execute(
                 f"""INSERT INTO entries (
                        subscription_id, guid, url, title, author,
-                       published_at, summary, content, fetched_at, enclosures
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       published_at, summary, content, fetched_at, enclosures,
+                       canonical_url, duplicate_of
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(subscription_id, guid) DO UPDATE SET
                        url = excluded.url,
                        title = excluded.title,
@@ -302,7 +376,9 @@ class Store:
                        summary = excluded.summary,
                        content = COALESCE(excluded.content, entries.content),
                        fetched_at = excluded.fetched_at,
-                       enclosures = COALESCE(excluded.enclosures, entries.enclosures)
+                       enclosures = COALESCE(excluded.enclosures, entries.enclosures),
+                       canonical_url = excluded.canonical_url,
+                       duplicate_of = COALESCE(excluded.duplicate_of, entries.duplicate_of)
                    WHERE entries.url {neq} excluded.url
                       OR entries.title {neq} excluded.title
                       OR entries.author {neq} excluded.author
@@ -327,6 +403,8 @@ class Store:
                     item.content,
                     _utc_now(),
                     json.dumps(item.enclosures) if item.enclosures else None,
+                    key,
+                    duplicate_of,
                 ),
             )
             if cursor.rowcount > 0:
@@ -341,9 +419,12 @@ class Store:
         unread_only: bool = False,
         limit: int = 20,
         since: str | None = None,
+        include_duplicates: bool = False,
     ) -> list[Entry]:
         clauses: list[str] = []
         params: list[object] = []
+        if not include_duplicates:
+            clauses.append("e.duplicate_of IS NULL")
         if subscription_id is not None:
             clauses.append("e.subscription_id = ?")
             params.append(subscription_id)
@@ -409,9 +490,12 @@ class Store:
         subscription_id: int | None = None,
         unread_only: bool = False,
         limit: int = 20,
+        include_duplicates: bool = False,
     ) -> list[Entry]:
         extra_clauses: list[str] = []
         extra_params: list[Any] = []
+        if not include_duplicates:
+            extra_clauses.append("e.duplicate_of IS NULL")
         if subscription_id is not None:
             extra_clauses.append("e.subscription_id = ?")
             extra_params.append(subscription_id)
@@ -444,6 +528,8 @@ class Store:
             (cutoff_iso,),
         )
         self._conn.commit()
+        if cursor.rowcount > 0:
+            self._reelect_keepers()
         return cursor.rowcount
 
     def update_entry_content(self, entry_id: int, content: str) -> None:

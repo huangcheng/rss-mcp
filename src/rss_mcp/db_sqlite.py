@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS entries (
     content TEXT,
     fetched_at TEXT NOT NULL,
     enclosures TEXT,
+    canonical_url TEXT,
+    duplicate_of INTEGER REFERENCES entries(id) ON DELETE SET NULL,
     UNIQUE (subscription_id, guid)
 );
 
@@ -79,4 +81,10 @@ MIGRATIONS = (
         "ALTER TABLE subscriptions ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0",
     ),
     ("entries", "enclosures", "ALTER TABLE entries ADD COLUMN enclosures TEXT"),
+    ("entries", "canonical_url", "ALTER TABLE entries ADD COLUMN canonical_url TEXT"),
+    (
+        "entries",
+        "duplicate_of",
+        "ALTER TABLE entries ADD COLUMN duplicate_of INTEGER REFERENCES entries(id) ON DELETE SET NULL",
+    ),
 )

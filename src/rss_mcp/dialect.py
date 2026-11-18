@@ -34,6 +34,8 @@ _PG_SCHEMA = (
         content TEXT,
         fetched_at TEXT NOT NULL,
         enclosures TEXT,
+        canonical_url TEXT,
+        duplicate_of INTEGER REFERENCES entries(id) ON DELETE SET NULL,
         UNIQUE (subscription_id, guid)
     )""",
     """CREATE TABLE IF NOT EXISTS entry_state (
@@ -49,7 +51,11 @@ _PG_MIGRATIONS = (
     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS failure_count INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS disabled INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE entries ADD COLUMN IF NOT EXISTS enclosures TEXT",
+    "ALTER TABLE entries ADD COLUMN IF NOT EXISTS canonical_url TEXT",
+    "ALTER TABLE entries ADD COLUMN IF NOT EXISTS duplicate_of INTEGER REFERENCES entries(id) ON DELETE SET NULL",
 )
+
+_CANONICAL_INDEX_DDL = "CREATE INDEX IF NOT EXISTS entries_canonical_idx ON entries(canonical_url)"
 
 
 def _fts_match_query(query: str) -> str | None:
@@ -87,6 +93,7 @@ class SqliteDialect:
             columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if column not in columns:
                 conn.execute(ddl)
+        conn.execute(_CANONICAL_INDEX_DDL)
         conn.commit()
 
     def tags_exists(self, alias: str) -> str:
@@ -125,6 +132,9 @@ class _PgConnection:
 
     def execute(self, sql: str, params: Any = ()) -> Any:
         return self._conn.execute(sql.replace("?", "%s"), params)
+
+    def executemany(self, sql: str, params_seq: Any) -> None:
+        self._conn.executemany(sql.replace("?", "%s"), params_seq)
 
     def commit(self) -> None:
         self._conn.commit()
@@ -169,6 +179,7 @@ class PostgresDialect:
     def init_schema(self, conn: _PgConnection) -> None:
         for statement in (*_PG_SCHEMA, *_PG_MIGRATIONS):
             conn.execute(statement)
+        conn.execute(_CANONICAL_INDEX_DDL)
         conn.commit()
         # Fold diacritics like SQLite's unicode61 tokenizer when the unaccent
         # extension is available; restricted deployments fall back to 'simple'.

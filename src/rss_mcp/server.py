@@ -351,7 +351,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
     @server.resource(
         "rss://entries/unread",
         name="unread_entries",
-        description="Most recent unread entries across all subscriptions (bodies omitted).",
+        description="Most recent unread entries across all subscriptions (bodies omitted, cross-feed duplicates excluded).",
         mime_type="application/json",
     )
     async def unread_entries_resource() -> str:
@@ -432,15 +432,17 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         unread_only: bool = False,
         limit: int | None = None,
         since: str | None = None,
+        include_duplicates: bool = False,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """List cached entries (bodies omitted). Limit falls back to the server default and is clamped."""
+        """List cached entries (bodies omitted). Cross-feed duplicates are hidden unless include_duplicates is set. Limit falls back to the server default and is clamped."""
         app = _app(ctx)
         rows = app.store.list_entries(
             subscription_id=subscription_id,
             unread_only=unread_only,
             limit=_limit(app.settings, limit),
             since=since,
+            include_duplicates=include_duplicates,
         )
         return {"entries": [_entry_payload(row, full=False) for row in rows]}
 
@@ -476,15 +478,17 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         subscription_id: int | None = None,
         unread_only: bool = False,
         limit: int | None = None,
+        include_duplicates: bool = False,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """Full-text search over cached title, summary, and content, ranked by bm25 with a match snippet. Omits entry bodies; use read_entry for full content."""
+        """Full-text search over cached title, summary, and content, ranked by bm25 with a match snippet. Cross-feed duplicates are hidden unless include_duplicates is set. Omits entry bodies; use read_entry for full content."""
         app = _app(ctx)
         rows = app.store.search_entries(
             query,
             subscription_id=subscription_id,
             unread_only=unread_only,
             limit=_limit(app.settings, limit),
+            include_duplicates=include_duplicates,
         )
         return {"entries": [_entry_payload(row, full=False) for row in rows]}
 
