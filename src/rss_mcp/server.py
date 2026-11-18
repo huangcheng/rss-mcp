@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
@@ -295,5 +296,41 @@ def create_server(settings: Settings | None = None) -> MCPServer:
     return server
 
 
-def main() -> None:
-    create_server().run()
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="rss-mcp",
+        description="Agent-only MCP server for RSS subscriptions (stdio by default).",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http"),
+        default="stdio",
+        help="MCP transport (default: stdio)",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address for streamable-http (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Bind port for streamable-http (default: 8000)",
+    )
+    parser.add_argument(
+        "--path",
+        default="/mcp",
+        help="Endpoint path for streamable-http (default: /mcp)",
+    )
+    args = parser.parse_args(argv)
+    server = create_server()
+    if args.transport == "stdio":
+        server.run()
+    else:
+        server.run(
+            transport="streamable-http",
+            host=args.host,
+            port=args.port,
+            streamable_http_path=args.path,
+        )

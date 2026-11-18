@@ -1,14 +1,14 @@
 # rss-mcp
 
-Agent-only MCP server for RSS and Atom. A host drives it over stdio. There is no GUI, TUI, or interactive CLI. Subscriptions, cached entries, unread state, and full-text search live in one local SQLite file. v1 is tools only: no resources, prompts, or MCP Apps.
+Agent-only MCP server for RSS and Atom. A host drives it over stdio (default) or Streamable HTTP. There is no GUI, TUI, or interactive CLI. Subscriptions, cached entries, unread state, and full-text search live in one local SQLite file. v1 is tools only: no resources, prompts, or MCP Apps.
 
-Protocol: [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) (stdio, tools) via the official Python SDK v2 (`mcp` ≥ 2.3). Design: [docs/superpowers/specs/2026-11-18-rss-mcp-design.md](docs/superpowers/specs/2026-11-18-rss-mcp-design.md).
+Protocol: [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) (stdio or Streamable HTTP, tools) via the official Python SDK v2 (`mcp` ≥ 2.3). Design: [docs/superpowers/specs/2026-11-18-rss-mcp-design.md](docs/superpowers/specs/2026-11-18-rss-mcp-design.md).
 
 Requires Python 3.11+.
 
 ## Host config
 
-The process reads JSON-RPC from stdin and writes MCP messages only to stdout. It exits when stdin closes.
+In stdio mode, the process reads JSON-RPC from stdin and writes MCP messages only to stdout. It exits when stdin closes.
 
 Cursor `mcp.json` (any stdio host can use the same command):
 
@@ -27,6 +27,35 @@ Cursor `mcp.json` (any stdio host can use the same command):
 ```
 
 `uvx rss-mcp` once the package is on an index. From this checkout: `uv run rss-mcp`.
+
+## HTTP transport
+
+Run the same server over Streamable HTTP instead of stdio:
+
+```bash
+uv run rss-mcp --transport streamable-http --host 127.0.0.1 --port 8000 --path /mcp
+```
+
+| Flag | Default |
+| --- | --- |
+| `--transport` | `stdio` (choices: `stdio`, `streamable-http`) |
+| `--host` | `127.0.0.1` |
+| `--port` | `8000` |
+| `--path` | `/mcp` |
+
+The MCP endpoint is then `http://127.0.0.1:8000/mcp`. Hosts that support remote servers can point at it directly:
+
+```json
+{
+  "mcpServers": {
+    "rss-mcp": {
+      "url": "http://127.0.0.1:8000/mcp"
+    }
+  }
+}
+```
+
+All sessions share one SQLite database (same `RSS_MCP_DB` setting). The endpoint serves both protocol eras: 2026-07-28 stateless per-request POSTs (with the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers and `_meta` envelope) and the legacy `initialize` handshake (up to 2025-11-25, with sessions) for older hosts. The server has no authentication: keep the default loopback bind, or put it behind a reverse proxy with auth before exposing it beyond localhost.
 
 ## Environment
 
