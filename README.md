@@ -59,3 +59,7 @@ uv run pytest tests/test_real_inoreader_opml.py -v -s
 ```
 
 They skip when `/Users/huangcheng/Downloads/Cheng-Inoreader-feeds-final-20261016.opml` is missing. Unit tests do not require that file.
+
+## License
+
+[MIT](LICENSE) © 2026 HUANG Cheng
