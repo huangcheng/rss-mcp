@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import httpx
@@ -441,3 +442,68 @@ async def test_fetch_feed_rejects_body_over_the_size_cap(monkeypatch):
     assert result.entries == []
     assert result.feed_title is None
     assert result.error
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_does_not_open_a_path_shaped_body(tmp_path, monkeypatch):
+    # feedparser.parse(bytes) opens an existing path and returns that file.
+    local = tmp_path / "secret.xml"
+    local.write_bytes(
+        b"""<?xml version="1.0"?>
+<rss version="2.0"><channel><title>LOCAL FILE</title>
+<item><title>Secret</title><guid>local-guid</guid>
+<link>https://local.example/secret</link></item>
+</channel></rss>"""
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=os.fsencode(local))
+
+    _install(monkeypatch, handler)
+    result = await fetch_feed(
+        "https://example.com/rss.xml",
+        etag=None,
+        last_modified=None,
+        user_agent="rss-mcp/test",
+        entry_cap=50,
+    )
+
+    assert result.status == "error"
+    assert result.entries == []
+    assert result.feed_title != "LOCAL FILE"
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_resolves_relative_links_against_the_final_url(monkeypatch):
+    # Keeps "posts/1", or joins it to the URL from before the redirect.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/start":
+            return httpx.Response(
+                302,
+                headers={"Location": "https://example.com/blog/feed.xml"},
+            )
+        return httpx.Response(
+            200,
+            content=b"""<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Blog</title>
+<item><title>Relative</title><guid>rel-1</guid><link>posts/1</link></item>
+<item><title>Absolute</title><guid>abs-1</guid>
+<link>https://cdn.example.com/a</link></item>
+</channel></rss>""",
+        )
+
+    _install(monkeypatch, handler)
+    result = await fetch_feed(
+        "https://example.com/start",
+        etag=None,
+        last_modified=None,
+        user_agent="rss-mcp/test",
+        entry_cap=10,
+    )
+
+    assert result.status == "ok"
+    assert result.error is None
+    assert [(entry.guid, entry.url) for entry in result.entries] == [
+        ("rel-1", "https://example.com/blog/posts/1"),
+        ("abs-1", "https://cdn.example.com/a"),
+    ]

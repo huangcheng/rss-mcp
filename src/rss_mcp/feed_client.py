@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
+from urllib.parse import urljoin
 
 import feedparser
 import httpx
@@ -67,10 +69,17 @@ def _content(entry: feedparser.FeedParserDict) -> str | None:
     return None
 
 
-def _entry(entry: feedparser.FeedParserDict) -> EntryInput:
+def _resolve_url(value: object, base_url: str) -> str | None:
+    raw = _text(value)
+    if raw is None or not base_url:
+        return raw
+    return _text(urljoin(base_url, raw))
+
+
+def _entry(entry: feedparser.FeedParserDict, base_url: str) -> EntryInput:
     return EntryInput(
         guid=_text(entry.get("id")),
-        url=_text(entry.get("link")),
+        url=_resolve_url(entry.get("link"), base_url),
         title=_text(entry.get("title")),
         author=_text(entry.get("author")),
         published_at=_published_at(entry),
@@ -88,6 +97,7 @@ def _cap(entries: list[EntryInput], entry_cap: int) -> list[EntryInput]:
 def _from_parsed(
     parsed: feedparser.FeedParserDict,
     *,
+    base_url: str,
     etag: str | None,
     last_modified: str | None,
     entry_cap: int,
@@ -102,7 +112,10 @@ def _from_parsed(
         return _error(f"unable to parse feed: {detail}")
     return FetchResult(
         status="ok",
-        entries=_cap([_entry(entry) for entry in raw_entries], entry_cap),
+        entries=_cap(
+            [_entry(entry, base_url) for entry in raw_entries],
+            entry_cap,
+        ),
         etag=etag,
         last_modified=last_modified,
         feed_title=_text(parsed.feed.get("title")),
@@ -157,6 +170,7 @@ async def fetch_feed(
                     )
                 if response.status_code != 200:
                     return _error(f"HTTP {response.status_code}")
+                final_url = str(response.url)
                 body = await _read_limited(response)
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
         message = str(exc).strip() or exc.__class__.__name__
@@ -164,11 +178,13 @@ async def fetch_feed(
     if body is None:
         return _error(f"response exceeds {MAX_FEED_BYTES} bytes")
     try:
-        parsed = feedparser.parse(body)
+        # BytesIO: feedparser.parse(bytes) opens a body that is an existing path.
+        parsed = feedparser.parse(io.BytesIO(body))
     except Exception as exc:
         return _error(f"unable to parse feed: {exc}")
     return _from_parsed(
         parsed,
+        base_url=final_url,
         etag=response_etag,
         last_modified=response_modified,
         entry_cap=entry_cap,
