@@ -4,7 +4,7 @@ Agent-only MCP server for RSS and Atom. A host drives it over stdio (default) or
 
 Protocol: [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) (stdio or Streamable HTTP, tools) via the official Python SDK v2 (`mcp` ≥ 2.3). Design: [docs/superpowers/specs/2026-11-18-rss-mcp-design.md](docs/superpowers/specs/2026-11-18-rss-mcp-design.md).
 
-Requires Python 3.11+.
+Requires Python 3.11+. Install from [PyPI](https://pypi.org/project/rss-mcp-server/): `uv tool install rss-mcp-server` gives you the `rss-mcp` and `rss-mcp-server` commands, or run it once with `uvx rss-mcp-server`.
 
 ## Host config
 
@@ -30,11 +30,13 @@ The PyPI distribution is `rss-mcp-server` (`rss-mcp` is blocked by a similar exi
 
 ## HTTP transport
 
-Run the same server over Streamable HTTP instead of stdio:
+Run the same server over Streamable HTTP instead of stdio, straight from PyPI:
 
 ```bash
-uv run rss-mcp --transport streamable-http --host 127.0.0.1 --port 8000 --path /mcp
+uvx rss-mcp-server --transport streamable-http --host 127.0.0.1 --port 8000 --path /mcp
 ```
+
+After `uv tool install rss-mcp-server`, use `rss-mcp --transport streamable-http …` instead; from this checkout, `uv run rss-mcp --transport streamable-http …`.
 
 | Flag | Default |
 | --- | --- |
@@ -78,7 +80,7 @@ The image runs the HTTP transport, stores the database in a `/data` volume, and 
 
 ```bash
 docker build -t rss-mcp .
-docker run -d --name rss-mcp -p 127.0.0.1:8000:8000 \
+docker run -d --name rss-mcp --restart unless-stopped -p 127.0.0.1:8000:8000 \
   -e RSS_MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
   -v rss-mcp-data:/data rss-mcp
 ```
