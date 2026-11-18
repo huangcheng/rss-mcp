@@ -102,7 +102,7 @@ The container binds `0.0.0.0` internally (required for port mapping), so set `RS
 | Variable | Default |
 | --- | --- |
 | `RSS_MCP_DB` | `~/.local/share/rss-mcp/rss.db` |
-| `RSS_MCP_USER_AGENT` | `rss-mcp/0.2 (+https://github.com/huangcheng/rss-mcp)` |
+| `RSS_MCP_USER_AGENT` | `rss-mcp/0.1 (+https://github.com/huangcheng/rss-mcp)` |
 | `RSS_MCP_AUTH_TOKEN` | unset (HTTP bearer auth disabled) |
 | `RSS_MCP_AUTH_TOKENS` | unset (comma-separated extra tokens) |
 | `RSS_MCP_FETCH_CONCURRENCY` | `8` |

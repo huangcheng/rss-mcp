@@ -1,4 +1,4 @@
-"""Tests for the 0.2.0 enhancements: concurrency, backoff/disable, scheduler,
+"""Tests for the 0.1.2 enhancements: concurrency, backoff/disable, scheduler,
 retention, tags, bulk mark, snippets, enclosures, resources, multi-token,
 rate limiting, and /healthz."""
 
