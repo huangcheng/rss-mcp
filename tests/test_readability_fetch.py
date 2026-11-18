@@ -4,6 +4,13 @@ import pytest
 import rss_mcp.readability_fetch as readability_fetch
 from rss_mcp.readability_fetch import fetch_article_text
 
+MINIFIED = (
+    "<!DOCTYPE html><html><head><title>Min</title></head><body>"
+    '<article class="entry-content"><h1>Title</h1><p>First paragraph stays whole.</p>'
+    "<p>Second paragraph follows.<br>After the break.</p></article>"
+    "</body></html>"
+)
+
 ARTICLE = """<!DOCTYPE html>
 <html>
 <head><title>Orbital pass</title></head>
@@ -58,6 +65,44 @@ async def test_fetch_article_text_returns_article_and_sends_request_options(monk
     assert text is not None
     assert "orbital mechanics" in text
     assert "Sidebar promo" not in text
+
+
+@pytest.mark.asyncio
+async def test_fetch_article_text_splits_minified_blocks(monkeypatch):
+    # Joins a heading, paragraphs, and br into TitleFirst / follows.After.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=MINIFIED.encode(),
+            headers={"content-type": "text/html"},
+        )
+
+    _install(monkeypatch, handler)
+    text = await fetch_article_text(
+        "https://example.com/posts/min",
+        user_agent="rss-mcp/test",
+    )
+
+    assert text is not None
+    assert "TitleFirst" not in text
+    assert "whole.Second" not in text
+    assert "follows.After" not in text
+    assert "First paragraph stays whole." in text
+    assert "Second paragraph follows." in text
+    assert "After the break." in text
+
+
+@pytest.mark.asyncio
+async def test_fetch_article_text_returns_none_for_non_ascii_user_agent(monkeypatch):
+    # Lets UnicodeEncodeError escape for a User-Agent httpx cannot encode.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="should not be fetched")
+
+    _install(monkeypatch, handler)
+    assert (
+        await fetch_article_text("https://example.com/posts/1", user_agent="阅读器/1.0")
+        is None
+    )
 
 
 @pytest.mark.asyncio

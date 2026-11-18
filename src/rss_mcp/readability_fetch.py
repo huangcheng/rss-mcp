@@ -9,6 +9,45 @@ from readability import Document
 MAX_ARTICLE_BYTES = 5 * 1024 * 1024
 _WHITESPACE = re.compile(r"[^\S\n]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
+_BLOCK_TAGS = frozenset(
+    {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "br",
+        "caption",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "figcaption",
+        "figure",
+        "footer",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "li",
+        "main",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    }
+)
 _HTML_TYPES = frozenset(
     {
         "text/html",
@@ -52,8 +91,17 @@ async def _read_limited(response: httpx.Response) -> bytes | None:
     return b"".join(chunks)
 
 
+def _separate_blocks(root) -> None:
+    for element in root.iter():
+        tag = element.tag
+        if not isinstance(tag, str) or tag.lower() not in _BLOCK_TAGS:
+            continue
+        element.tail = "\n" + (element.tail or "")
+
+
 def _plain_text(summary_html: str) -> str | None:
     root = lxml_html.fromstring(summary_html)
+    _separate_blocks(root)
     text = root.text_content().replace("\r\n", "\n").replace("\r", "\n")
     text = _WHITESPACE.sub(" ", text)
     text = _BLANK_LINES.sub("\n\n", text)
@@ -78,7 +126,7 @@ async def fetch_article_text(
                 if response.status_code != 200 or not _allows_extract(response):
                     return None
                 body = await _read_limited(response)
-    except (httpx.HTTPError, httpx.InvalidURL):
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeEncodeError):
         return None
     if not body or not body.strip() or not _looks_textual(body):
         return None
