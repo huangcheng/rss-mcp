@@ -1,0 +1,14 @@
+.superpowers/
+.worktrees/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+dist/
+*.egg-info/
+.coverage
+htmlcov/
+*.db
+.DS_Store
