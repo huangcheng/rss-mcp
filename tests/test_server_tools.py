@@ -65,7 +65,7 @@ async def test_tools_list_is_exactly_the_ten_tools_in_table_order(server_setting
 
     server = create_server(server_settings)
     assert server.name == "rss-mcp"
-    assert server.version == "0.1.0"
+    assert server.version == "0.1.1"
     async with Client(server) as client:
         listed = await client.list_tools()
         caps = client.server_capabilities
@@ -75,7 +75,7 @@ async def test_tools_list_is_exactly_the_ten_tools_in_table_order(server_setting
     assert caps.resources is None
     assert caps.prompts is None
     assert info is not None
-    assert info.version == "0.1.0"
+    assert info.version == "0.1.1"
     # subscriptions=False: hosts should not expect a live tools listChanged stream
     assert "subscriptions/listen" not in server._lowlevel_server._request_handlers
 

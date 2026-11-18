@@ -1,6 +1,6 @@
 [project]
 name = "rss-mcp-server"
-version = "0.1.0"
+version = "0.1.1"
 description = "Agent-only MCP server for RSS subscriptions, fetch, and unread tracking."
 readme = "README.md"
 license = "MIT"
@@ -38,3 +38,8 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rss_mcp"]
+
+# Agent scratch dirs must never reach a published artifact, even if the
+# gitignore changes: a token file once leaked into the 0.1.0 sdist this way.
+[tool.hatch.build.targets.sdist]
+exclude = [".qwen", ".superpowers", ".worktrees"]
