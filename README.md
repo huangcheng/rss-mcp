@@ -86,6 +86,7 @@ The HTTP app also serves an unauthenticated `GET /healthz` (JSON: status, versio
 - **Keyword filters**: `include_keywords` / `exclude_keywords` per subscription hide entries whose title or summary misses (or hits) a keyword — case-insensitive substring. Filtered entries are stored but flagged, hidden from listing, search, unread counts, and the unread resource. Rule edits re-apply to cached entries, so filtering is retroactive and reversible.
 - **Mute**: `muted=true` keeps a feed fetched but hides it from aggregate views (listings/search without a `subscription_id`, unread counts). Explicit `subscription_id` queries still return its entries.
 - **RSS 2.0 spec hints**: the feed's `ttl` (minutes) acts as its default refresh interval (an explicit `fetch_interval` overrides it), and `skipHours`/`skipDays` (GMT) pause bulk refreshes during the declared windows — honored by both the built-in loop and the Temporal scheduler. Items without a link fall back to a permalink `guid`; enclosure URLs must be http(s). Conditional requests (ETag/Last-Modified → 304) complement these hints at the HTTP layer.
+- **OpenTelemetry traces** (`rss-mcp-server[otel]` + `RSS_MCP_OTEL_OTLP_ENDPOINT`): every MCP request is traced by the SDK middleware (gen_ai conventions, distributed trace-context), plus `rss.feed_fetch` spans (host, status, duration, 304 outcome) and `rss.refresh_all` round spans — point it at any OTLP/HTTP receiver (Tempo, collector) and read the waterfalls in Grafana. Off by default; zero overhead when unset.
 
 ## Live notifications
 
@@ -122,6 +123,7 @@ The container binds `0.0.0.0` internally (required for port mapping), so set `RS
 | `RSS_MCP_DISABLE_AFTER_FAILURES` | `5` (`0` never auto-disable) |
 | `RSS_MCP_RETENTION_DAYS` | unset (keep entries forever) |
 | `RSS_MCP_RATE_LIMIT_PER_MINUTE` | `120` (`0` disables; HTTP only) |
+| `RSS_MCP_OTEL_OTLP_ENDPOINT` | unset (traces off); set to an OTLP/HTTP trace URL (e.g. `http://tempo:43210/v1/traces`) to enable — requires the `[otel]` extra |
 
 `list_entries` and `search_entries` use `limit` 20 when omitted and clamp to 0–100. Each fetch upserts at most 50 entries and sends stored `ETag` / `Last-Modified` when the feed has them.
 

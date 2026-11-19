@@ -18,6 +18,7 @@ from xml.etree.ElementTree import ParseError
 import anyio
 from lxml import html as lxml_html
 from mcp.server import MCPServer
+from opentelemetry import trace as otel_trace
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context
@@ -37,8 +38,10 @@ from rss_mcp.models import Entry, Subscription
 from rss_mcp.opml import build_opml, parse_opml
 from rss_mcp.readability_fetch import fetch_article_text
 from rss_mcp.store import Store
+from rss_mcp.telemetry import setup_telemetry, shutdown_telemetry
 
 logger = logging.getLogger("rss_mcp")
+_tracer = otel_trace.get_tracer("rss_mcp")
 
 _BACKOFF_BASE_SECONDS = 60
 _BACKOFF_CAP_SECONDS = 3600
@@ -178,15 +181,34 @@ def _prune(app: _App) -> int:
 
 
 async def _refresh(app: _App, sub: Subscription) -> dict[str, Any]:
-    result = await fetch_feed(
-        sub.url,
-        etag=sub.etag,
-        last_modified=sub.last_modified,
-        user_agent=sub.user_agent or app.settings.user_agent,
-        headers=sub.headers,
-        entry_cap=app.settings.fetch_entry_cap,
-        timeout=30.0,
-    )
+    from urllib.parse import urlsplit
+
+    host = urlsplit(sub.url).hostname or sub.url
+    with _tracer.start_as_current_span(
+        "rss.feed_fetch",
+        attributes={
+            "rss.subscription.id": sub.id,
+            "rss.feed.host": host,
+        },
+    ) as span:
+        result = await fetch_feed(
+            sub.url,
+            etag=sub.etag,
+            last_modified=sub.last_modified,
+            user_agent=sub.user_agent or app.settings.user_agent,
+            headers=sub.headers,
+            entry_cap=app.settings.fetch_entry_cap,
+            timeout=30.0,
+        )
+        span.set_attribute("rss.fetch.status", result.status)
+        if result.error:
+            span.set_attribute("rss.fetch.error", result.error)
+        row = await _record_refresh(app, sub, result)
+        span.set_attribute("rss.fetch.upserted", row["upserted"])
+        return row
+
+
+async def _record_refresh(app: _App, sub: Subscription, result) -> dict[str, Any]:
     if result.status == "error":
         message = result.error or "fetch failed"
         failures = app.store.record_fetch_failure(sub.id, message)
@@ -258,6 +280,15 @@ def _skipped(sub: Subscription, reason: str) -> dict[str, Any]:
 
 
 async def _refresh_all(app: _App) -> dict[str, Any]:
+    with _tracer.start_as_current_span("rss.refresh_all") as round_span:
+        summary = await _refresh_all_inner(app)
+        round_span.set_attribute("rss.round.total", len(summary["results"]))
+        for key in ("ok", "not_modified", "error", "skipped", "upserted"):
+            round_span.set_attribute(f"rss.round.{key}", summary[key])
+        return summary
+
+
+async def _refresh_all_inner(app: _App) -> dict[str, Any]:
     subs = app.store.list_subscriptions()
     now = datetime.now(timezone.utc)
     results: dict[int, dict[str, Any]] = {}
@@ -306,6 +337,7 @@ async def _scheduler_loop(app: _App) -> None:
 def _app_lifespan(settings: Settings, holder: dict[str, _App], events: InMemorySubscriptionBus | None):
     @asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[_App]:
+        setup_telemetry(settings)
         conn = connect_db(settings)
         try:
             init_db(conn)
@@ -323,6 +355,7 @@ def _app_lifespan(settings: Settings, holder: dict[str, _App], events: InMemoryS
         finally:
             holder.pop("app", None)
             conn.close()
+            shutdown_telemetry()
 
     return lifespan
 
