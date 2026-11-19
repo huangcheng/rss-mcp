@@ -320,18 +320,32 @@ async def _refresh_all_inner(app: _App) -> dict[str, Any]:
     return summary
 
 
+_PRUNE_INTERVAL_SECONDS = 3600
+
+
 async def _scheduler_loop(app: _App) -> None:
     interval = app.settings.refresh_interval or 0
     while interval > 0:
         await anyio.sleep(interval)
         try:
             await _refresh_all(app)
+        except Exception:
+            logger.exception("scheduled refresh failed")
+
+
+async def _prune_loop(app: _App) -> None:
+    # Runs on its own cadence so retention is enforced regardless of which
+    # driver owns fetching (in-process loop, Temporal, or manual tool calls);
+    # hourly is plenty for a multi-day retention window.
+    while True:
+        await anyio.sleep(_PRUNE_INTERVAL_SECONDS)
+        try:
             if _prune(app) > 0:
                 # Pruning removes unread entries; listeners' unread views are
                 # now stale even though nothing was upserted.
                 await _notify(app, _UNREAD_URI, _SUBSCRIPTIONS_URI)
         except Exception:
-            logger.exception("scheduled refresh failed")
+            logger.exception("scheduled prune failed")
 
 
 def _app_lifespan(settings: Settings, holder: dict[str, _App], events: InMemorySubscriptionBus | None):
@@ -343,9 +357,12 @@ def _app_lifespan(settings: Settings, holder: dict[str, _App], events: InMemoryS
             init_db(conn)
             app = _App(settings=settings, store=Store(conn), events=events)
             holder["app"] = app
-            if settings.refresh_interval:
+            if settings.refresh_interval or settings.retention_days:
                 async with anyio.create_task_group() as tg:
-                    tg.start_soon(_scheduler_loop, app)
+                    if settings.refresh_interval:
+                        tg.start_soon(_scheduler_loop, app)
+                    if settings.retention_days:
+                        tg.start_soon(_prune_loop, app)
                     try:
                         yield app
                     finally:
