@@ -24,6 +24,7 @@ TOOL_NAMES = [
     "search_entries",
     "get_digest",
     "mark_entry",
+    "star_entry",
     "import_opml",
     "export_opml",
     "discover_feed",
@@ -62,7 +63,7 @@ async def _ok(client: Client, name: str, arguments: dict | None = None) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_tools_list_is_exactly_the_thirteen_tools_in_table_order(server_settings: Settings) -> None:
+async def test_tools_list_is_exactly_the_fourteen_tools_in_table_order(server_settings: Settings) -> None:
     # Drops a tool, renames one, or lists them in a different order.
     from rss_mcp.server import create_server
 
@@ -902,3 +903,53 @@ async def test_get_digest_tag_scope_and_limit(server_settings: Settings) -> None
 
         clamped = await _ok(client, "get_digest", {"max_entries": 500})
         assert len(clamped["entries"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_catch_up_sweeps_and_star_pin_through_tools(server_settings: Settings) -> None:
+    from rss_mcp.server import create_server
+
+    conn, store = _open_store(server_settings)
+    news = store.add_subscription("https://n.example/f", tags=["news"])
+    misc = store.add_subscription("https://m.example/f")
+    store.upsert_entries(
+        news.id,
+        [EntryInput(guid="n1", url="https://n.example/1", title="Keep me")],
+    )
+    store.upsert_entries(
+        misc.id,
+        [EntryInput(guid="m1", url="https://m.example/1", title="Misc entry")],
+    )
+    pinned = store.list_entries(subscription_id=news.id, limit=10)[0]
+    free = store.list_entries(subscription_id=misc.id, limit=10)[0]
+    conn.close()
+
+    async with Client(create_server(server_settings)) as client:
+        starred = await _ok(client, "star_entry", {"entry_ids": [pinned.id, 999]})
+        assert starred == {"updated": 1}
+
+        # Catch-up is explicit: a bare call is an argument error, all=True
+        # sweeps everything read while sparing starred entries.
+        bare = await client.call_tool("mark_entry", {})
+        assert bare.is_error is True
+        caught_up = await _ok(client, "mark_entry", {"all": True})
+        assert caught_up == {"updated": 1}
+
+        conflict = await client.call_tool(
+            "mark_entry", {"entry_ids": [free.id], "tag": "news"}
+        )
+        assert conflict.is_error is True
+        garbage = await client.call_tool("mark_entry", {"before": "tomorrow"})
+        assert garbage.is_error is True
+
+        tag_sweep = await _ok(client, "mark_entry", {"tag": "news", "read": False})
+        assert tag_sweep == {"updated": 0}  # pinned is starred and spared
+
+        entry = await _ok(client, "read_entry", {"entry_id": pinned.id})
+        assert entry["starred"] is True
+        assert entry["read_at"] is None
+        freed = await _ok(client, "read_entry", {"entry_id": free.id})
+        assert freed["read_at"] is not None
+
+        unstarred = await _ok(client, "star_entry", {"entry_ids": [pinned.id], "starred": False})
+        assert unstarred == {"updated": 1}

@@ -49,6 +49,26 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _normalize_iso_timestamp(value: str, *, param: str) -> str:
+    """Parse model-supplied ISO 8601 input into the stored canonical format.
+
+    Stored timestamps are compared lexicographically, so raw pass-through of
+    short or garbage values would silently match the wrong rows (e.g. a
+    non-parseable "before" sorts above everything and sweeps the whole
+    library). Reject anything unparseable at the tool boundary instead.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        raise ToolError(f"invalid {param} timestamp: {value!r}")
+    try:
+        parsed = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    except ValueError:
+        raise ToolError(f"invalid {param} timestamp: {value!r}") from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _limit(settings: Settings, limit: int | None) -> int:
     if limit is None:
         return settings.default_limit
@@ -456,8 +476,10 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         include_duplicates: bool = False,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """List cached entries (bodies omitted). Cross-feed duplicates are hidden unless include_duplicates is set. Limit falls back to the server default and is clamped."""
+        """List cached entries (bodies omitted). Cross-feed duplicates are hidden unless include_duplicates is set. since/before accept ISO 8601 timestamps. Limit falls back to the server default and is clamped."""
         app = _app(ctx)
+        if since is not None:
+            since = _normalize_iso_timestamp(since, param="since")
         rows = app.store.list_entries(
             subscription_id=subscription_id,
             unread_only=unread_only,
@@ -520,8 +542,10 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         max_entries: int = 50,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """One-call unread briefing: per-subscription unread groups plus the most recent unread entries (deduped, mute- and filter-aware, bodies omitted). Follow up with read_entry for detail and mark_entry to catch up."""
+        """One-call unread briefing: per-subscription unread groups plus the most recent unread entries (deduped, mute- and filter-aware, bodies omitted; since accepts ISO 8601). Follow up with read_entry for detail and mark_entry to catch up."""
         app = _app(ctx)
+        if since is not None:
+            since = _normalize_iso_timestamp(since, param="since")
         limit = _limit(app.settings, max_entries)
         active = [sub for sub in app.store.list_subscriptions(tag=tag) if not sub.muted]
         if tag is not None:
@@ -561,20 +585,40 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         entry_ids: list[int] | None = None,
         subscription_id: int | None = None,
         read: bool = True,
+        tag: str | None = None,
+        before: str | None = None,
+        all: bool = False,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """Mark entries read or unread by id list, or every entry of a subscription. Unknown ids are skipped."""
+        """Mark entries read or unread: by id list, a whole subscription, a tag, entries published before an ISO 8601 timestamp, or the whole library with all=True (catch-up). Unknown ids are skipped. Subscription/tag/before/all sweeps skip starred entries; use entry_ids to change those."""
         app = _app(ctx)
-        if entry_ids is None and subscription_id is None:
-            raise ToolError("provide entry_ids, subscription_id, or both")
-        updated = 0
+        has_ids = bool(entry_ids)
+        if before is not None:
+            before = _normalize_iso_timestamp(before, param="before")
+        sweep = tag is not None or before is not None or all
+        if (has_ids or subscription_id is not None) and sweep:
+            raise ToolError("tag/before/all cannot be combined with entry_ids or subscription_id")
+        if sweep:
+            return {"updated": app.store.mark_entries_bulk(tag=tag, before=before, read=read)}
         if subscription_id is not None:
             if app.store.get_subscription(subscription_id) is None:
                 raise ToolError(f"subscription not found: {subscription_id}")
-            updated += app.store.mark_subscription_entries(subscription_id, read)
-        if entry_ids:
-            updated += app.store.mark_entries(entry_ids, read)
-        return {"updated": updated}
+            updated = app.store.mark_subscription_entries(subscription_id, read)
+            if has_ids:
+                updated += app.store.mark_entries(entry_ids, read)
+            return {"updated": updated}
+        if has_ids:
+            return {"updated": app.store.mark_entries(entry_ids, read)}
+        raise ToolError("provide entry_ids, subscription_id, tag, before, or all")
+
+    @server.tool()
+    async def star_entry(
+        entry_ids: list[int],
+        starred: bool = True,
+        *, ctx: Context,
+    ) -> dict[str, Any]:
+        """Star (pin) or unstar entries. Starred entries are spared by catch-up sweeps and retention pruning. Unknown ids are skipped."""
+        return {"updated": _app(ctx).store.set_starred(entry_ids, starred)}
 
     @server.tool()
     async def import_opml(opml: str, *, ctx: Context) -> dict[str, Any]:

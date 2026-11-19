@@ -320,3 +320,23 @@ def test_filters_and_mute_mirror_sqlite_behavior(pg_store):
     pg_store.update_subscription(noisy.id, exclude_keywords=[])
     # The muted feed still stays out of aggregates; only the two noisy entries return.
     assert len(pg_store.list_entries(limit=10)) == 2
+
+
+def test_sweeps_and_starring_mirror_sqlite_behavior(pg_store):
+    sub = pg_store.add_subscription("https://s.example/f", tags=["daily"])
+    pg_store.upsert_entries(
+        sub.id,
+        [EntryInput(guid=f"g{i}", title=f"Entry {i}") for i in range(3)],
+    )
+    entries = {e.guid: e for e in pg_store.list_entries(subscription_id=sub.id, limit=10)}
+    pg_store.set_starred([entries["g2"].id], True)
+
+    assert pg_store.mark_entries_bulk(read=True) == 2
+    assert pg_store.get_subscription(sub.id).unread_count == 1
+    assert pg_store.get_entry(entries["g2"].id).starred is True
+
+    # Unread sweep flips the two read entries; the starred one was never read.
+    assert pg_store.mark_entries_bulk(tag="daily", read=False) == 2
+    pg_store.set_starred([entries["g2"].id], False)
+    assert pg_store.mark_entries_bulk(tag="daily", read=False) == 0
+    assert pg_store.get_subscription(sub.id).unread_count == 3

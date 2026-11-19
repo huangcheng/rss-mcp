@@ -685,11 +685,77 @@ class Store:
         return [_entry_from_row(row) for row in rows]
 
     def mark_subscription_entries(self, subscription_id: int, read: bool) -> int:
-        rows = self._conn.execute(
-            "SELECT id FROM entries WHERE subscription_id = ?",
-            (subscription_id,),
-        ).fetchall()
-        return self.mark_entries([row["id"] for row in rows], read)
+        return self._mark_sweep(
+            ["e.subscription_id = ?"], [subscription_id], read=read
+        )
+
+    def mark_entries_bulk(
+        self,
+        *,
+        tag: str | None = None,
+        before: str | None = None,
+        read: bool = True,
+    ) -> int:
+        """Sweep-mark entries read (or unread) without enumerating ids.
+
+        Scope: a tag, entries published before a timestamp, or everything.
+        Sweeps never touch starred entries — a star means "keep this for
+        later", and catch-up must not consume it. Explicit id-based
+        mark_entries remains the way to change starred entries.
+        """
+        clauses: list[str] = []
+        params: list[object] = []
+        if tag is not None:
+            clauses.append(self._dialect.tags_exists("s"))
+            params.append(tag)
+        if before is not None:
+            clauses.append("COALESCE(e.published_at, e.fetched_at) < ?")
+            params.append(before)
+        return self._mark_sweep(clauses, params, read=read)
+
+    def _mark_sweep(self, clauses: list[str], params: list[object], *, read: bool) -> int:
+        read_at = _utc_now() if read else None
+        read_filter = "es.read_at IS NULL" if read else "es.read_at IS NOT NULL"
+        extra = f" AND {' AND '.join(clauses)}" if clauses else ""
+        cursor = self._conn.execute(
+            f"""INSERT INTO entry_state (entry_id, read_at)
+                SELECT e.id, ?
+                FROM entries AS e
+                JOIN subscriptions AS s ON s.id = e.subscription_id
+                LEFT JOIN entry_state AS es ON es.entry_id = e.id
+                WHERE {read_filter} AND COALESCE(es.starred, 0) = 0{extra}
+                ON CONFLICT(entry_id) DO UPDATE SET read_at = excluded.read_at""",
+            [read_at, *params],
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    def set_starred(self, entry_ids: list[int], starred: bool) -> int:
+        changed = 0
+        flag = int(starred)
+        seen: set[int] = set()
+        for entry_id in entry_ids:
+            if entry_id in seen:
+                continue
+            seen.add(entry_id)
+            row = self._conn.execute(
+                """SELECT e.id, es.starred
+                   FROM entries AS e
+                   LEFT JOIN entry_state AS es ON es.entry_id = e.id
+                   WHERE e.id = ?""",
+                (entry_id,),
+            ).fetchone()
+            if row is None or bool(row["starred"] or 0) == starred:
+                continue
+            self._conn.execute(
+                """INSERT INTO entry_state (entry_id, starred)
+                   VALUES (?, ?)
+                   ON CONFLICT(entry_id) DO UPDATE SET starred = excluded.starred""",
+                (entry_id, flag),
+            )
+            changed += 1
+        self._conn.commit()
+        return changed
 
     def prune_entries(self, cutoff_iso: str) -> int:
         cursor = self._conn.execute(

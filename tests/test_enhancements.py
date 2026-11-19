@@ -220,6 +220,7 @@ async def test_mark_entry_by_subscription_and_validation(tmp_path):
     assert listed.structured_content["subscriptions"][0]["unread_count"] == 0
     assert unread.structured_content == {"updated": 3}
     assert missing.is_error is True
+    # No selectors at all is an error; catch-up is explicit (all=True).
     assert empty.is_error is True
 
 

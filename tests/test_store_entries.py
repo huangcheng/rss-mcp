@@ -419,3 +419,67 @@ def test_upsert_null_to_value_updates_with_unchanged_title(store: Store) -> None
     assert store.upsert_entries(sub.id, [EntryInput(guid="g", title="Same")]) == 1
     assert store.upsert_entries(sub.id, [EntryInput(guid="g", title="Same", summary="now set")]) == 1
     assert store.list_entries(limit=10)[0].summary == "now set"
+
+
+def test_sweep_marks_all_but_starred(store: Store) -> None:
+    sub = store.add_subscription("https://example.com/feed.xml")
+    store.upsert_entries(
+        sub.id,
+        [EntryInput(guid=f"g{i}", title=f"Entry {i}") for i in range(3)],
+    )
+    entries = {entry.guid: entry for entry in store.list_entries(subscription_id=sub.id, limit=10)}
+    store.set_starred([entries["g1"].id], True)
+
+    assert store.mark_entries_bulk(read=True) == 2
+
+    kept_starred = store.get_entry(entries["g1"].id)
+    assert kept_starred.read_at is None
+    assert kept_starred.starred is True
+    assert store.get_subscription(sub.id).unread_count == 1
+
+
+def test_sweep_scopes_by_tag_and_before(store: Store) -> None:
+    news = store.add_subscription("https://n.example/f", tags=["news"])
+    misc = store.add_subscription("https://m.example/f", tags=["misc"])
+    store.upsert_entries(
+        news.id,
+        [
+            EntryInput(guid="n-old", title="Old news", published_at="2026-11-01T00:00:00Z"),
+            EntryInput(guid="n-new", title="New news", published_at="2026-11-10T00:00:00Z"),
+        ],
+    )
+    store.upsert_entries(misc.id, [EntryInput(guid="m-1", title="Misc", published_at="2026-11-05T00:00:00Z")])
+
+    assert store.mark_entries_bulk(tag="news", before="2026-11-05T00:00:00Z", read=True) == 1
+    unread = {
+        (e.subscription_id, e.guid)
+        for e in store.list_entries(limit=10, unread_only=True)
+    }
+    assert unread == {(news.id, "n-new"), (misc.id, "m-1")}
+
+
+def test_sweep_can_mark_unread(store: Store) -> None:
+    sub = store.add_subscription("https://example.com/feed.xml")
+    store.upsert_entries(
+        sub.id,
+        [EntryInput(guid=f"g{i}", title=f"Entry {i}") for i in range(3)],
+    )
+    entries = [entry.id for entry in store.list_entries(subscription_id=sub.id, limit=10)]
+    store.mark_entries(entries, True)
+    store.set_starred([entries[0]], True)
+
+    # Unread sweeps also spare starred entries.
+    assert store.mark_entries_bulk(read=False) == 2
+    assert store.get_subscription(sub.id).unread_count == 2
+    assert store.get_entry(entries[0]).read_at is not None
+
+
+def test_set_starred_skips_unknown_and_noop(store: Store) -> None:
+    sub = store.add_subscription("https://example.com/feed.xml")
+    store.upsert_entries(sub.id, [EntryInput(guid="g1", title="One")])
+    entry = store.list_entries(subscription_id=sub.id, limit=10)[0]
+
+    assert store.set_starred([entry.id, 999], True) == 1
+    assert store.set_starred([entry.id], True) == 0
+    assert store.set_starred([entry.id], False) == 1
+    assert store.get_entry(entry.id).starred is False
