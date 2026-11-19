@@ -290,3 +290,33 @@ def test_cross_feed_dedup_on_postgres(pg_store):
     assert len(revealed) == 1
     assert revealed[0].subscription_id in (b.id, c.id)
     assert revealed[0].duplicate_of is None
+
+def test_filters_and_mute_mirror_sqlite_behavior(pg_store):
+    quiet = pg_store.add_subscription("https://q.example/f", muted=True)
+    noisy = pg_store.add_subscription("https://n.example/f", exclude_keywords=["sponsored"])
+    pg_store.upsert_entries(
+        quiet.id,
+        [EntryInput(guid="q1", url="https://x.example/q", title="Quiet", summary="hidden in aggregates")],
+    )
+    pg_store.upsert_entries(
+        noisy.id,
+        [
+            EntryInput(guid="n1", url="https://x.example/n1", title="Real", summary="keep"),
+            EntryInput(guid="n2", url="https://x.example/n2", title="Sponsored", summary="drop"),
+        ],
+        exclude_keywords=["sponsored"],
+    )
+
+    aggregate = pg_store.list_entries(limit=10)
+    assert [entry.guid for entry in aggregate] == ["n1"]
+    explicit = pg_store.list_entries(subscription_id=quiet.id, limit=10)
+    assert [entry.guid for entry in explicit] == ["q1"]
+    searched = pg_store.search_entries("quiet OR sponsored", limit=10)
+    assert searched == []
+    subs = {row.id: row for row in pg_store.list_subscriptions()}
+    assert subs[quiet.id].unread_count == 0
+    assert subs[noisy.id].unread_count == 1
+
+    pg_store.update_subscription(noisy.id, exclude_keywords=[])
+    # The muted feed still stays out of aggregates; only the two noisy entries return.
+    assert len(pg_store.list_entries(limit=10)) == 2

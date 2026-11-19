@@ -49,6 +49,9 @@ SELECT
     s.headers,
     s.failure_count,
     s.disabled,
+    s.muted,
+    s.include_keywords,
+    s.exclude_keywords,
     (
         SELECT COUNT(*)
         FROM entries AS e
@@ -56,6 +59,8 @@ SELECT
         WHERE e.subscription_id = s.id
           AND es.read_at IS NULL
           AND e.duplicate_of IS NULL
+          AND e.filtered = 0
+          AND s.muted = 0
     ) AS unread_count
 FROM subscriptions AS s
 """
@@ -70,6 +75,25 @@ def _tags_from_column(raw: str | None) -> list[str]:
         return []
     loaded = json.loads(raw)
     return list(loaded)
+
+
+def _clean_keywords(keywords: list[str] | None) -> list[str]:
+    if not keywords:
+        return []
+    return [keyword.strip() for keyword in keywords if keyword.strip()]
+
+
+def _entry_filtered(
+    include: list[str], exclude: list[str], title: str | None, summary: str | None
+) -> bool:
+    # Case-insensitive substring match over title + summary. An empty include
+    # list passes everything; a non-empty one requires at least one hit.
+    haystack = ((title or "") + "\n" + (summary or "")).casefold()
+    if any(keyword.casefold() in haystack for keyword in exclude):
+        return True
+    if include:
+        return not any(keyword.casefold() in haystack for keyword in include)
+    return False
 
 
 def _clamp_limit(limit: int) -> int:
@@ -138,6 +162,9 @@ def _subscription_from_row(row: Any) -> Subscription:
         headers=json.loads(raw_headers) if raw_headers else None,
         failure_count=row["failure_count"],
         disabled=bool(row["disabled"]),
+        muted=bool(row["muted"]),
+        include_keywords=_tags_from_column(row["include_keywords"]),
+        exclude_keywords=_tags_from_column(row["exclude_keywords"]),
     )
 
 
@@ -148,6 +175,10 @@ class Store:
         self._conn = conn
         self._dialect = dialect_for(conn)
         self._backfill_canonical_keys()
+        # Heal shadowed keepers first (e.g. a crash between rule change and
+        # re-election), then converge duplicate links.
+        self._release_shadowed_keepers()
+        self._conn.commit()
         self._reelect_keepers()
 
     def _backfill_canonical_keys(self) -> None:
@@ -162,16 +193,33 @@ class Store:
         self._conn.executemany("UPDATE entries SET canonical_url = ? WHERE id = ?", updates)
         self._conn.commit()
 
+    def _release_shadowed_keepers(self) -> None:
+        # A keeper readers cannot see (keyword-filtered entry, muted feed) must
+        # not suppress the visible copies of the same article.
+        self._conn.execute(
+            """UPDATE entries SET duplicate_of = NULL
+               WHERE duplicate_of IS NOT NULL
+                 AND duplicate_of IN (
+                     SELECT k.id FROM entries AS k
+                     JOIN subscriptions AS s ON s.id = k.subscription_id
+                     WHERE k.filtered = 1 OR s.muted = 1
+                 )"""
+        )
+
     def _reelect_keepers(self) -> None:
         # After a keeper dies (FK SET NULL) several copies can be revealed at
         # once; re-elect the earliest surviving cross-feed copy per key. URL
         # identity is authoritative here, so no time window is applied.
+        # Candidates must be visible: unfiltered and not in a muted feed.
         self._conn.execute(
             """UPDATE entries SET duplicate_of = (
                    SELECT MIN(e2.id) FROM entries AS e2
+                   JOIN subscriptions AS s2 ON s2.id = e2.subscription_id
                    WHERE e2.canonical_url = entries.canonical_url
                      AND e2.id < entries.id
                      AND e2.duplicate_of IS NULL
+                     AND e2.filtered = 0
+                     AND s2.muted = 0
                      AND e2.subscription_id != entries.subscription_id
                )
                WHERE duplicate_of IS NULL
@@ -179,9 +227,12 @@ class Store:
                  AND canonical_url != ''
                  AND EXISTS (
                    SELECT 1 FROM entries AS e2
+                   JOIN subscriptions AS s2 ON s2.id = e2.subscription_id
                    WHERE e2.canonical_url = entries.canonical_url
                      AND e2.id < entries.id
                      AND e2.duplicate_of IS NULL
+                     AND e2.filtered = 0
+                     AND s2.muted = 0
                      AND e2.subscription_id != entries.subscription_id
                  )"""
         )
@@ -194,12 +245,16 @@ class Store:
         tags: list[str] | None = None,
         user_agent: str | None = None,
         headers: dict[str, str] | None = None,
+        muted: bool = False,
+        include_keywords: list[str] | None = None,
+        exclude_keywords: list[str] | None = None,
     ) -> Subscription:
         normalized = url.strip()
         self._conn.execute(
             f"""INSERT {self._dialect.insert_ignore} INTO subscriptions
-                   (url, title, tags, created_at, user_agent, headers)
-               VALUES (?, ?, ?, ?, ?, ?){self._dialect.conflict_nothing}""",
+                   (url, title, tags, created_at, user_agent, headers,
+                    muted, include_keywords, exclude_keywords)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?){self._dialect.conflict_nothing}""",
             (
                 normalized,
                 title,
@@ -207,6 +262,9 @@ class Store:
                 _utc_now(),
                 user_agent,
                 json.dumps(headers) if headers else None,
+                int(muted),
+                json.dumps(_clean_keywords(include_keywords)),
+                json.dumps(_clean_keywords(exclude_keywords)),
             ),
         )
         self._conn.commit()
@@ -246,6 +304,9 @@ class Store:
         user_agent: str | None = None,
         headers: dict[str, str] | None = None,
         disabled: bool | None = None,
+        muted: bool | None = None,
+        include_keywords: list[str] | None = None,
+        exclude_keywords: list[str] | None = None,
     ) -> bool:
         assignments: list[str] = []
         params: list[object] = []
@@ -267,6 +328,15 @@ class Store:
             if not disabled:
                 assignments.append("failure_count = 0")
                 assignments.append("last_error = NULL")
+        if muted is not None:
+            assignments.append("muted = ?")
+            params.append(int(muted))
+        if include_keywords is not None:
+            assignments.append("include_keywords = ?")
+            params.append(json.dumps(_clean_keywords(include_keywords)))
+        if exclude_keywords is not None:
+            assignments.append("exclude_keywords = ?")
+            params.append(json.dumps(_clean_keywords(exclude_keywords)))
         if not assignments:
             return False
         params.append(subscription_id)
@@ -275,6 +345,14 @@ class Store:
             params,
         )
         self._conn.commit()
+        rules_changed = include_keywords is not None or exclude_keywords is not None
+        if cursor.rowcount > 0 and rules_changed:
+            self.reevaluate_filters(subscription_id)
+        elif cursor.rowcount > 0 and muted is not None:
+            # Mute only changes which keepers readers can see, not entry flags.
+            self._release_shadowed_keepers()
+            self._conn.commit()
+            self._reelect_keepers()
         return cursor.rowcount > 0
 
     def record_fetch_failure(self, subscription_id: int, error: str) -> int:
@@ -346,28 +424,83 @@ class Store:
         lo = (anchor_dt - window).strftime("%Y-%m-%dT%H:%M:%SZ")
         hi = (anchor_dt + window).strftime("%Y-%m-%dT%H:%M:%SZ")
         row = self._conn.execute(
-            """SELECT id FROM entries
-               WHERE canonical_url = ?
-                 AND subscription_id != ?
-                 AND duplicate_of IS NULL
-                 AND COALESCE(published_at, fetched_at) BETWEEN ? AND ?
-               ORDER BY id LIMIT 1""",
+            """SELECT e.id FROM entries AS e
+               JOIN subscriptions AS s ON s.id = e.subscription_id
+               WHERE e.canonical_url = ?
+                 AND e.subscription_id != ?
+                 AND e.duplicate_of IS NULL
+                 AND e.filtered = 0
+                 AND s.muted = 0
+                 AND COALESCE(e.published_at, e.fetched_at) BETWEEN ? AND ?
+               ORDER BY e.id LIMIT 1""",
             (key, subscription_id, lo, hi),
         ).fetchone()
         return row["id"] if row is not None else None
 
-    def upsert_entries(self, subscription_id: int, items: list[EntryInput]) -> int:
+    def reevaluate_filters(self, subscription_id: int) -> None:
+        """Rescan a subscription's entries against its current keyword rules.
+
+        Runs when the rules change so filtering is retroactive and reversible:
+        clearing a rule immediately reveals previously hidden entries. Copies
+        whose keeper became unreadable (filtered or muted) are released so
+        keeper re-election can promote a visible copy.
+        """
+        sub = self.get_subscription(subscription_id)
+        if sub is None:
+            return
+        rows = self._conn.execute(
+            "SELECT id, title, summary FROM entries WHERE subscription_id = ?",
+            (subscription_id,),
+        ).fetchall()
+        if rows:
+            updates = [
+                (
+                    int(
+                        _entry_filtered(
+                            sub.include_keywords, sub.exclude_keywords,
+                            row["title"], row["summary"],
+                        )
+                    ),
+                    row["id"],
+                )
+                for row in rows
+            ]
+            self._conn.executemany("UPDATE entries SET filtered = ? WHERE id = ?", updates)
+        self._release_shadowed_keepers()
+        self._conn.commit()
+        self._reelect_keepers()
+
+    def upsert_entries(
+        self,
+        subscription_id: int,
+        items: list[EntryInput],
+        *,
+        include_keywords: list[str] | None = None,
+        exclude_keywords: list[str] | None = None,
+    ) -> int:
         written = 0
+        flipped = False
         neq = self._dialect.null_safe_neq
-        for item in items:
-            key = canonical_key(item.url, item.title)
+        include = _clean_keywords(include_keywords)
+        exclude = _clean_keywords(exclude_keywords)
+        prepared = [
+            (
+                item,
+                _entry_guid(item),
+                canonical_key(item.url, item.title),
+                int(_entry_filtered(include, exclude, item.title, item.summary)),
+            )
+            for item in items
+        ]
+        prior_flags = self._current_filtered_flags(subscription_id, [guid for _, guid, _, _ in prepared])
+        for item, guid, key, filtered in prepared:
             duplicate_of = self._find_duplicate_keeper(subscription_id, item, key)
             cursor = self._conn.execute(
                 f"""INSERT INTO entries (
                        subscription_id, guid, url, title, author,
                        published_at, summary, content, fetched_at, enclosures,
-                       canonical_url, duplicate_of
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       canonical_url, duplicate_of, filtered
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(subscription_id, guid) DO UPDATE SET
                        url = excluded.url,
                        title = excluded.title,
@@ -378,7 +511,8 @@ class Store:
                        fetched_at = excluded.fetched_at,
                        enclosures = COALESCE(excluded.enclosures, entries.enclosures),
                        canonical_url = excluded.canonical_url,
-                       duplicate_of = COALESCE(excluded.duplicate_of, entries.duplicate_of)
+                       duplicate_of = COALESCE(excluded.duplicate_of, entries.duplicate_of),
+                       filtered = excluded.filtered
                    WHERE entries.url {neq} excluded.url
                       OR entries.title {neq} excluded.title
                       OR entries.author {neq} excluded.author
@@ -394,7 +528,7 @@ class Store:
                       )""",
                 (
                     subscription_id,
-                    _entry_guid(item),
+                    guid,
                     _normalized_url(item.url),
                     item.title,
                     item.author,
@@ -405,12 +539,35 @@ class Store:
                     json.dumps(item.enclosures) if item.enclosures else None,
                     key,
                     duplicate_of,
+                    filtered,
                 ),
             )
             if cursor.rowcount > 0:
                 written += cursor.rowcount
+                if guid in prior_flags and prior_flags[guid] != filtered:
+                    flipped = True
         self._conn.commit()
+        if flipped:
+            # A content change can flip an existing keeper's filtered flag
+            # (filtered = excluded.filtered above); converge keeper links right
+            # away instead of leaving shadowed keepers until the next heal.
+            # Re-election is deliberately window-free (see _reelect_keepers),
+            # so it runs only when a flag actually flipped, never eagerly.
+            self._release_shadowed_keepers()
+            self._conn.commit()
+            self._reelect_keepers()
         return written
+
+    def _current_filtered_flags(self, subscription_id: int, guids: list[str]) -> dict[str, int]:
+        if not guids:
+            return {}
+        placeholders = ",".join("?" * len(guids))
+        rows = self._conn.execute(
+            f"""SELECT guid, filtered FROM entries
+                WHERE subscription_id = ? AND guid IN ({placeholders})""",
+            [subscription_id, *guids],
+        ).fetchall()
+        return {row["guid"]: int(row["filtered"]) for row in rows}
 
     def list_entries(
         self,
@@ -425,9 +582,17 @@ class Store:
         params: list[object] = []
         if not include_duplicates:
             clauses.append("e.duplicate_of IS NULL")
+        # Keyword-filtered entries stay hidden everywhere, even for an explicit
+        # subscription; muted subscriptions only drop out of aggregate views.
+        clauses.append("e.filtered = 0")
         if subscription_id is not None:
             clauses.append("e.subscription_id = ?")
             params.append(subscription_id)
+        else:
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM subscriptions AS ms"
+                " WHERE ms.id = e.subscription_id AND ms.muted = 1)"
+            )
         if unread_only:
             clauses.append("es.read_at IS NULL")
         if since is not None:
@@ -496,9 +661,15 @@ class Store:
         extra_params: list[Any] = []
         if not include_duplicates:
             extra_clauses.append("e.duplicate_of IS NULL")
+        extra_clauses.append("e.filtered = 0")
         if subscription_id is not None:
             extra_clauses.append("e.subscription_id = ?")
             extra_params.append(subscription_id)
+        else:
+            extra_clauses.append(
+                "NOT EXISTS (SELECT 1 FROM subscriptions AS ms"
+                " WHERE ms.id = e.subscription_id AND ms.muted = 1)"
+            )
         if unread_only:
             extra_clauses.append("es.read_at IS NULL")
         built = self._dialect.search_sql(

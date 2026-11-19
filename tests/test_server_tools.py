@@ -768,3 +768,72 @@ def test_main_runs_the_stdio_server(monkeypatch: pytest.MonkeyPatch) -> None:
     console_main()
     assert console_main is main
     assert seen == {"name": "rss-mcp", "transport": "stdio", "kwargs": {}}
+
+
+@pytest.mark.asyncio
+async def test_filter_rules_apply_end_to_end_through_tools(
+    server_settings: Settings, monkeypatch
+) -> None:
+    from rss_mcp import server
+    from rss_mcp.models import EntryInput
+
+    async def fake_fetch(url: str, **kwargs) -> FetchResult:
+        return FetchResult(
+            status="ok",
+            entries=[
+                EntryInput(guid="g1", url="https://x.example/1", title="Real story", summary="good"),
+                EntryInput(guid="g2", url="https://x.example/2", title="Sponsored story", summary="ad"),
+            ],
+            etag=None,
+            last_modified=None,
+            feed_title=None,
+            error=None,
+        )
+
+    monkeypatch.setattr(server, "fetch_feed", fake_fetch)
+    async with Client(server.create_server(server_settings)) as client:
+        added = await _ok(
+            client,
+            "add_subscription",
+            {"url": "https://a.example/f", "exclude_keywords": ["sponsored"]},
+        )
+        assert added["exclude_keywords"] == ["sponsored"]
+        await _ok(client, "fetch_feed", {"subscription_id": added["id"]})
+        listed = await _ok(client, "list_entries", {})
+        assert [entry["guid"] for entry in listed["entries"]] == ["g1"]
+        searched = await _ok(client, "search_entries", {"query": "story"})
+        assert [entry["guid"] for entry in searched["entries"]] == ["g1"]
+
+        cleared = await _ok(
+            client, "update_subscription", {"subscription_id": added["id"], "exclude_keywords": []}
+        )
+        assert cleared["exclude_keywords"] == []
+        relisted = await _ok(client, "list_entries", {})
+        assert len(relisted["entries"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_muted_subscription_hidden_from_aggregates_through_tools(
+    server_settings: Settings,
+) -> None:
+    from rss_mcp.server import create_server
+
+    conn, store = _open_store(server_settings)
+    quiet = store.add_subscription("https://quiet.example/f")
+    loud = store.add_subscription("https://loud.example/f")
+    store.upsert_entries(quiet.id, [EntryInput(guid="q1", url="https://x.example/q", title="Quiet")])
+    store.upsert_entries(loud.id, [EntryInput(guid="l1", url="https://x.example/l", title="Loud")])
+    conn.close()
+
+    async with Client(create_server(server_settings)) as client:
+        await _ok(client, "update_subscription", {"subscription_id": quiet.id, "muted": True})
+        unread = await _ok(client, "list_subscriptions", {})
+        by_id = {row["id"]: row for row in unread["subscriptions"]}
+        assert by_id[quiet.id]["muted"] is True
+        assert by_id[quiet.id]["unread_count"] == 0
+        assert by_id[loud.id]["unread_count"] == 1
+
+        aggregate = await _ok(client, "list_entries", {})
+        assert [entry["guid"] for entry in aggregate["entries"]] == ["l1"]
+        explicit = await _ok(client, "list_entries", {"subscription_id": quiet.id})
+        assert [entry["guid"] for entry in explicit["entries"]] == ["q1"]

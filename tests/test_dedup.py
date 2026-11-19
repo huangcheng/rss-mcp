@@ -272,3 +272,88 @@ def test_keyless_rows_get_sentinel_and_converge(tmp_path):
     # Second construction must not re-process the sentinel row.
     remaining = conn.execute("SELECT COUNT(*) AS n FROM entries WHERE canonical_url IS NULL").fetchone()["n"]
     assert remaining == 0
+
+
+def test_filtered_copy_never_holds_keeper_seat(store):
+    a = store.add_subscription("https://a.example/feed.xml", exclude_keywords=["sponsored"])
+    b = store.add_subscription("https://b.example/feed.xml")
+    store.upsert_entries(
+        a.id,
+        [EntryInput(guid="a1", url="https://x.example/s", title="Sponsored story")],
+        exclude_keywords=["sponsored"],
+    )
+    store.upsert_entries(
+        b.id,
+        [EntryInput(guid="b1", url="https://x.example/s", title="Story")],
+    )
+    visible = store.list_entries(limit=10)
+    assert len(visible) == 1
+    assert visible[0].subscription_id == b.id
+    assert visible[0].duplicate_of is None
+    assert store.get_subscription(b.id).unread_count == 1
+
+
+def test_filtering_a_keeper_promotes_the_duplicate(store):
+    a = store.add_subscription("https://a.example/feed.xml")
+    b = store.add_subscription("https://b.example/feed.xml")
+    store.upsert_entries(a.id, [EntryInput(guid="a1", url="https://x.example/s", title="Story")])
+    store.upsert_entries(b.id, [EntryInput(guid="b1", url="https://x.example/s", title="Story")])
+    assert len(store.list_entries(limit=10)) == 1
+
+    store.update_subscription(a.id, exclude_keywords=["story"])
+
+    visible = store.list_entries(limit=10)
+    assert len(visible) == 1
+    assert visible[0].subscription_id == b.id
+    assert visible[0].duplicate_of is None
+    assert store.get_subscription(a.id).unread_count == 0
+    assert store.get_subscription(b.id).unread_count == 1
+
+
+def test_muting_a_keeper_promotes_the_duplicate_and_back(store):
+    a = store.add_subscription("https://a.example/feed.xml")
+    b = store.add_subscription("https://b.example/feed.xml")
+    store.upsert_entries(a.id, [EntryInput(guid="a1", url="https://x.example/s", title="Story")])
+    store.upsert_entries(b.id, [EntryInput(guid="b1", url="https://x.example/s", title="Story")])
+
+    store.update_subscription(a.id, muted=True)
+    visible = store.list_entries(limit=10)
+    assert len(visible) == 1
+    assert visible[0].subscription_id == b.id
+
+    store.update_subscription(a.id, muted=False)
+    visible = store.list_entries(limit=10)
+    assert len(visible) == 1
+    # Earliest copy wins the keeper seat back once it is visible again.
+    assert visible[0].subscription_id == a.id
+
+def test_refetch_flipping_a_keepers_filter_releases_duplicates(store):
+    # Regression: a changed-content re-upsert flips filtered on a keeper;
+    # the other feed's copy must become visible without a restart.
+    a = store.add_subscription("https://a.example/feed.xml")
+    b = store.add_subscription("https://b.example/feed.xml")
+    store.upsert_entries(a.id, [EntryInput(guid="a1", url="https://x.example/s", title="Story")])
+    store.upsert_entries(b.id, [EntryInput(guid="b1", url="https://x.example/s", title="Story")])
+    assert len(store.list_entries(limit=10)) == 1
+
+    # Feed A refetches; the story now carries a filtered keyword.
+    store.upsert_entries(
+        a.id,
+        [EntryInput(guid="a1", url="https://x.example/s", title="Story", summary="now sponsored")],
+        exclude_keywords=["sponsored"],
+    )
+    visible = store.list_entries(limit=10)
+    assert len(visible) == 1
+    assert visible[0].subscription_id == b.id
+
+    # And back: the filtered summary disappears again on the next change. The
+    # earlier copy re-enters through duplicate detection, so either feed may
+    # hold the keeper seat; the invariant is one visible copy.
+    store.upsert_entries(
+        a.id,
+        [EntryInput(guid="a1", url="https://x.example/s", title="Story", summary="clean again")],
+        exclude_keywords=["sponsored"],
+    )
+    visible = store.list_entries(limit=10)
+    assert len(visible) == 1
+    assert visible[0].subscription_id in (a.id, b.id)

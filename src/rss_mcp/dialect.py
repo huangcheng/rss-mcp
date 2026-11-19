@@ -20,7 +20,10 @@ _PG_SCHEMA = (
         user_agent TEXT,
         headers TEXT,
         failure_count INTEGER NOT NULL DEFAULT 0,
-        disabled INTEGER NOT NULL DEFAULT 0
+        disabled INTEGER NOT NULL DEFAULT 0,
+        muted INTEGER NOT NULL DEFAULT 0,
+        include_keywords TEXT,
+        exclude_keywords TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS entries (
         id SERIAL PRIMARY KEY,
@@ -36,6 +39,7 @@ _PG_SCHEMA = (
         enclosures TEXT,
         canonical_url TEXT,
         duplicate_of INTEGER REFERENCES entries(id) ON DELETE SET NULL,
+        filtered INTEGER NOT NULL DEFAULT 0,
         UNIQUE (subscription_id, guid)
     )""",
     """CREATE TABLE IF NOT EXISTS entry_state (
@@ -53,6 +57,10 @@ _PG_MIGRATIONS = (
     "ALTER TABLE entries ADD COLUMN IF NOT EXISTS enclosures TEXT",
     "ALTER TABLE entries ADD COLUMN IF NOT EXISTS canonical_url TEXT",
     "ALTER TABLE entries ADD COLUMN IF NOT EXISTS duplicate_of INTEGER REFERENCES entries(id) ON DELETE SET NULL",
+    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS muted INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS include_keywords TEXT",
+    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS exclude_keywords TEXT",
+    "ALTER TABLE entries ADD COLUMN IF NOT EXISTS filtered INTEGER NOT NULL DEFAULT 0",
 )
 
 _CANONICAL_INDEX_DDL = "CREATE INDEX IF NOT EXISTS entries_canonical_idx ON entries(canonical_url)"
@@ -134,7 +142,9 @@ class _PgConnection:
         return self._conn.execute(sql.replace("?", "%s"), params)
 
     def executemany(self, sql: str, params_seq: Any) -> None:
-        self._conn.executemany(sql.replace("?", "%s"), params_seq)
+        # psycopg3 exposes executemany on cursors only.
+        with self._conn.cursor() as cursor:
+            cursor.executemany(sql.replace("?", "%s"), params_seq)
 
     def commit(self) -> None:
         self._conn.commit()

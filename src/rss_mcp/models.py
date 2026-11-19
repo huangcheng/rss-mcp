@@ -19,6 +19,9 @@ class Subscription:
     headers: dict[str, str] | None = None
     failure_count: int = 0
     disabled: bool = False
+    muted: bool = False
+    include_keywords: list[str] = field(default_factory=list)
+    exclude_keywords: list[str] = field(default_factory=list)
 
 
 @dataclass

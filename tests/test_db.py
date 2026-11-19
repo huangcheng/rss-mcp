@@ -41,6 +41,9 @@ def test_init_db_creates_tables(tmp_path: Path) -> None:
         "headers",
         "failure_count",
         "disabled",
+        "muted",
+        "include_keywords",
+        "exclude_keywords",
     ]
     assert columns("entries") == [
         "id",
@@ -56,6 +59,7 @@ def test_init_db_creates_tables(tmp_path: Path) -> None:
         "enclosures",
         "canonical_url",
         "duplicate_of",
+        "filtered",
     ]
     assert columns("entry_state") == ["entry_id", "read_at", "starred"]
 
@@ -172,11 +176,22 @@ def test_init_db_migrates_0_1_schema(tmp_path: Path) -> None:
     init_db(migrated)
     sub_columns = {row["name"] for row in migrated.execute("PRAGMA table_info(subscriptions)")}
     entry_columns = {row["name"] for row in migrated.execute("PRAGMA table_info(entries)")}
-    assert {"user_agent", "headers", "failure_count", "disabled"} <= sub_columns
-    assert {"enclosures", "canonical_url", "duplicate_of"} <= entry_columns
-    row = migrated.execute("SELECT failure_count, disabled FROM subscriptions").fetchone()
+    assert {
+        "user_agent",
+        "headers",
+        "failure_count",
+        "disabled",
+        "muted",
+        "include_keywords",
+        "exclude_keywords",
+    } <= sub_columns
+    assert {"enclosures", "canonical_url", "duplicate_of", "filtered"} <= entry_columns
+    row = migrated.execute(
+        "SELECT failure_count, disabled, muted FROM subscriptions"
+    ).fetchone()
     assert row["failure_count"] == 0
     assert row["disabled"] == 0
+    assert row["muted"] == 0
     assert migrated.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     migrated.close()
 

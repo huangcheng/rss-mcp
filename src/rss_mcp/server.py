@@ -129,7 +129,12 @@ async def _refresh(app: _App, sub: Subscription) -> dict[str, Any]:
             "upserted": 0,
             "error": None,
         }
-    written = app.store.upsert_entries(sub.id, result.entries)
+    written = app.store.upsert_entries(
+        sub.id,
+        result.entries,
+        include_keywords=sub.include_keywords,
+        exclude_keywords=sub.exclude_keywords,
+    )
     app.store.update_fetch_meta(
         sub.id,
         etag=result.etag,
@@ -369,11 +374,21 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         tags: list[str] | None = None,
         user_agent: str | None = None,
         headers: dict[str, str] | None = None,
+        muted: bool = False,
+        include_keywords: list[str] | None = None,
+        exclude_keywords: list[str] | None = None,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """Add a feed by URL. Repeating a URL returns the existing subscription. Optional per-feed user_agent/headers override the defaults."""
+        """Add a feed by URL. Repeating a URL returns the existing subscription. Optional per-feed user_agent/headers override the defaults. include_keywords/exclude_keywords hide entries whose title or summary does not match (or does match, case-insensitive substring); muted keeps the feed fetched but hides it from aggregate views."""
         sub = _app(ctx).store.add_subscription(
-            url, title=title, tags=tags, user_agent=user_agent, headers=headers
+            url,
+            title=title,
+            tags=tags,
+            user_agent=user_agent,
+            headers=headers,
+            muted=muted,
+            include_keywords=include_keywords,
+            exclude_keywords=exclude_keywords,
         )
         return asdict(sub)
 
@@ -385,9 +400,12 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         user_agent: str | None = None,
         headers: dict[str, str] | None = None,
         disabled: bool | None = None,
+        muted: bool | None = None,
+        include_keywords: list[str] | None = None,
+        exclude_keywords: list[str] | None = None,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """Edit a subscription. Omitted fields are unchanged; empty string/dict/list clears a field. disabled=False re-enables and resets the failure count."""
+        """Edit a subscription. Omitted fields are unchanged; empty string/dict/list clears a field. disabled=False re-enables and resets the failure count. Changing keyword rules re-applies them to already cached entries."""
         app = _app(ctx)
         if app.store.get_subscription(subscription_id) is None:
             raise ToolError(f"subscription not found: {subscription_id}")
@@ -398,6 +416,9 @@ def create_server(settings: Settings | None = None) -> MCPServer:
             user_agent=user_agent,
             headers=headers,
             disabled=disabled,
+            muted=muted,
+            include_keywords=include_keywords,
+            exclude_keywords=exclude_keywords,
         )
         return asdict(app.store.get_subscription(subscription_id))
 

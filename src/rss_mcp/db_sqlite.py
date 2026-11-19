@@ -14,7 +14,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     user_agent TEXT,
     headers TEXT,
     failure_count INTEGER NOT NULL DEFAULT 0,
-    disabled INTEGER NOT NULL DEFAULT 0
+    disabled INTEGER NOT NULL DEFAULT 0,
+    muted INTEGER NOT NULL DEFAULT 0,
+    include_keywords TEXT,
+    exclude_keywords TEXT
 );
 
 CREATE TABLE IF NOT EXISTS entries (
@@ -31,6 +34,7 @@ CREATE TABLE IF NOT EXISTS entries (
     enclosures TEXT,
     canonical_url TEXT,
     duplicate_of INTEGER REFERENCES entries(id) ON DELETE SET NULL,
+    filtered INTEGER NOT NULL DEFAULT 0,
     UNIQUE (subscription_id, guid)
 );
 
@@ -86,5 +90,25 @@ MIGRATIONS = (
         "entries",
         "duplicate_of",
         "ALTER TABLE entries ADD COLUMN duplicate_of INTEGER REFERENCES entries(id) ON DELETE SET NULL",
+    ),
+    (
+        "subscriptions",
+        "muted",
+        "ALTER TABLE subscriptions ADD COLUMN muted INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "subscriptions",
+        "include_keywords",
+        "ALTER TABLE subscriptions ADD COLUMN include_keywords TEXT",
+    ),
+    (
+        "subscriptions",
+        "exclude_keywords",
+        "ALTER TABLE subscriptions ADD COLUMN exclude_keywords TEXT",
+    ),
+    (
+        "entries",
+        "filtered",
+        "ALTER TABLE entries ADD COLUMN filtered INTEGER NOT NULL DEFAULT 0",
     ),
 )
