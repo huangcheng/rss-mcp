@@ -1,6 +1,6 @@
 # rss-mcp
 
-Agent-only MCP server for RSS and Atom. A host drives it over stdio (default) or Streamable HTTP. There is no GUI, TUI, or interactive CLI. Subscriptions, cached entries, unread state, and full-text search live in one local SQLite file. Twelve tools plus two read-only resources; no prompts or MCP Apps.
+Agent-only MCP server for RSS and Atom. A host drives it over stdio (default) or Streamable HTTP. There is no GUI, TUI, or interactive CLI. Subscriptions, cached entries, unread state, and full-text search live in one local SQLite file. Fourteen tools, two read-only resources, one prompt, and live update notifications; no MCP Apps.
 
 Protocol: [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) (stdio or Streamable HTTP; tools + resources) via the official Python SDK v2 (`mcp` ≥ 2.3).
 
@@ -83,6 +83,12 @@ The HTTP app also serves an unauthenticated `GET /healthz` (JSON: status, versio
 - **Scheduled refresh**: set `RSS_MCP_REFRESH_INTERVAL` (seconds) to refresh all feeds in the background on that interval; unset means fetch-on-demand only.
 - **Retention**: set `RSS_MCP_RETENTION_DAYS` to prune entries older than that many days on each scheduled refresh (starred entries are kept). Unset keeps everything.
 - **Per-feed overrides**: `add_subscription` / `update_subscription` accept `user_agent` and `headers` for feeds that block the default client.
+- **Keyword filters**: `include_keywords` / `exclude_keywords` per subscription hide entries whose title or summary misses (or hits) a keyword — case-insensitive substring. Filtered entries are stored but flagged, hidden from listing, search, unread counts, and the unread resource. Rule edits re-apply to cached entries, so filtering is retroactive and reversible.
+- **Mute**: `muted=true` keeps a feed fetched but hides it from aggregate views (listings/search without a `subscription_id`, unread counts). Explicit `subscription_id` queries still return its entries.
+
+## Live notifications
+
+Hosts can stop polling: call `subscriptions/listen` with a `resource_subscriptions` filter (protocol revision 2026-07-28) and the server pushes `notifications/resources/updated` for `rss://entries/unread` and `rss://subscriptions` whenever a fetch lands new entries, read state changes (read_entry, mark_entry), entries are starred, subscriptions change, or the scheduler prunes old entries. Works over stdio and the HTTP stream. Unchanged fetches only notify `rss://subscriptions` (fetch metadata changed). Delivery is best-effort: a broken listener is skipped, never failed back into the mutation.
 
 ## Durable scheduling (Temporal)
 
@@ -107,7 +113,7 @@ The container binds `0.0.0.0` internally (required for port mapping), so set `RS
 | --- | --- |
 | `RSS_MCP_DB` | `~/.local/share/rss-mcp/rss.db` (SQLite path) |
 | `RSS_MCP_DB_URL` | unset; overrides `RSS_MCP_DB` — `sqlite:///path` or `postgresql://user:pass@host/db` |
-| `RSS_MCP_USER_AGENT` | `rss-mcp/0.2 (+https://github.com/huangcheng/rss-mcp)` |
+| `RSS_MCP_USER_AGENT` | `rss-mcp/<version> (+https://github.com/huangcheng/rss-mcp)` (derived from the package version) |
 | `RSS_MCP_AUTH_TOKEN` | unset (HTTP bearer auth disabled) |
 | `RSS_MCP_AUTH_TOKENS` | unset (comma-separated extra tokens) |
 | `RSS_MCP_FETCH_CONCURRENCY` | `8` |
@@ -131,15 +137,17 @@ Both engines implement the same behavior: subscriptions, entries, read/star stat
 
 ## Tools
 
-- `add_subscription` — Add a feed by URL with optional tags, per-feed `user_agent`/`headers`. Repeating a URL returns the existing subscription.
-- `update_subscription` — Edit title/tags/user_agent/headers/disabled. Omitted fields are unchanged; empty string/dict/list clears; `disabled=false` re-enables and resets failures.
+- `add_subscription` — Add a feed by URL with optional tags, per-feed `user_agent`/`headers`, keyword filters, and `muted`. Repeating a URL returns the existing subscription.
+- `update_subscription` — Edit title/tags/user_agent/headers/disabled/muted/filters. Omitted fields are unchanged; empty string/dict/list clears; `disabled=false` re-enables and resets failures; keyword rule changes re-apply to cached entries.
 - `remove_subscription` — Delete a subscription and its cached entries.
 - `list_subscriptions` — List subscriptions with unread counts and fetch health, optionally filtered by `tag`.
 - `fetch_feed` — Fetch one subscription, or every subscription concurrently when the id is omitted (disabled/backing-off feeds are skipped in bulk; fetching by id re-enables).
-- `list_entries` — List cached entries (article bodies omitted). Cross-feed duplicates are hidden by default; `include_duplicates` shows them. Limit falls back to the server default and is clamped.
+- `list_entries` — List cached entries (article bodies omitted). Cross-feed duplicates and keyword-filtered entries are hidden; muted subscriptions drop out of aggregate views (explicit `subscription_id` keeps them). `since` accepts ISO 8601. Limit falls back to the server default and is clamped.
 - `read_entry` — Return one entry with full content and enclosures. `fetch_full` replaces content only when article text is returned. `mark_read` marks it read.
-- `search_entries` — Full-text search over cached title, summary, and content, bm25-ranked with a match `snippet` (bodies omitted; use `read_entry` for full text). Cross-feed duplicates are hidden by default; `include_duplicates` shows them.
-- `mark_entry` — Mark entries read/unread by `entry_ids`, or a whole subscription via `subscription_id`. Unknown ids are skipped.
+- `search_entries` — Full-text search over cached title, summary, and content, bm25-ranked with a match `snippet` (bodies omitted; use `read_entry` for full text). Duplicates, filtered entries, and muted feeds are excluded exactly like `list_entries`.
+- `get_digest` — One-call unread briefing: per-subscription unread groups plus the most recent unread entries (deduped, mute/filter-aware, bodies omitted), scoped by `tag`/`since`/`max_entries`. Pair with `read_entry` and `mark_entry` catch-up.
+- `mark_entry` — Mark entries read/unread by `entry_ids`, a whole `subscription_id`, a `tag`, entries published `before` an ISO 8601 timestamp, or the whole library with `all=true` (catch-up). Sweeps skip starred entries; use `entry_ids` to change those. Unknown ids are skipped.
+- `star_entry` — Star (pin) entries. Starred entries are spared by catch-up sweeps and retention pruning.
 - `import_opml` — Add each OPML feed, preserving folder names as tags. Existing URLs are skipped.
 - `export_opml` — Export subscriptions as an OPML document, grouped by first tag.
 - `discover_feed` — Find RSS/Atom feed URLs for a site: advertised link tags first, then common feed paths. Pass a candidate url to `add_subscription`.
@@ -147,9 +155,13 @@ Both engines implement the same behavior: subscriptions, entries, read/star stat
 ## Resources
 
 - `rss://subscriptions` — JSON: all subscriptions with unread counts and fetch health.
-- `rss://entries/unread` — JSON: most recent unread entries across subscriptions (bodies omitted, cross-feed duplicates excluded).
+- `rss://entries/unread` — JSON: most recent unread entries across subscriptions (bodies omitted, cross-feed duplicates and filtered entries excluded).
 
-**Cross-feed dedup**: the same article syndicated by several feeds is stored once per feed but shown once overall — entries are matched by normalized URL (scheme unified to https, tracking params dropped) or normalized title within a 30-day window, and the earliest copy wins. Unread counts exclude hidden copies. Deleting the winning copy re-elects the next one.
+**Cross-feed dedup**: the same article syndicated by several feeds is stored once per feed but shown once overall — entries are matched by normalized URL (scheme unified to https, tracking params dropped) or normalized title within a 30-day window, and the earliest copy wins. Unread counts exclude hidden copies. Deleting the winning copy re-elects the next one. A copy readers cannot see (keyword-filtered, or in a muted feed) never holds the winning seat: it is released and the next visible copy is promoted.
+
+## Prompts
+
+- `daily-digest` — Brief the user on unread entries: instructs the host model to call `get_digest`, summarize per subscription, offer `read_entry` for detail, and suggest `mark_entry` catch-up. Takes `max_entries` and optional `tag`.
 
 ## CI and releases
 

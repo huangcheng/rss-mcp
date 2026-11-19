@@ -4,7 +4,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-_DEFAULT_USER_AGENT = "rss-mcp/0.2 (+https://github.com/huangcheng/rss-mcp)"
+from rss_mcp import __version__
+
+_DEFAULT_USER_AGENT = f"rss-mcp/{__version__} (+https://github.com/huangcheng/rss-mcp)"
 
 
 def _int_env(name: str, default: int) -> int:

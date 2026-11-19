@@ -8,11 +8,18 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 - **`discover_feed` tool**: finds feed URLs from advertised `<link rel=alternate>` tags (honoring `<base href>`) and common-path probes; bounded reads, off-loop parsing, concurrent probes.
 - **Cross-feed dedup**: canonical URL/title keys, 30-day window, earliest copy wins, keeper re-election on delete/prune, legacy backfill at startup; `include_duplicates` escape hatch on `list_entries`/`search_entries`.
 
-## 0.3.x — agent experience
+## 0.3.0 — released 2026-11-19
 
-- Per-feed filter rules: keyword include/exclude, mute a subscription without deleting it.
-- MCP prompts: a `daily-digest` template hosts can invoke for an unread briefing.
-- Live notifications: `subscriptions/listen` plus `notifications/resources/updated` when new entries land, so hosts stop polling.
+- **Per-feed filter rules and mute**: keyword include/exclude lists (case-insensitive substring over title+summary) hide entries store-wide but retroactively and reversibly — rules re-apply to cached entries on edit. `muted` keeps a feed fetched while hiding it from aggregate views and unread counts.
+- **`get_digest` tool**: one-call unread briefing (per-subscription groups + newest unread entries, dedup/mute/filter-aware) so hosts stop reassembling digests client-side.
+- **Bulk catch-up and starring**: `mark_entry` sweeps by tag, before-timestamp, or `all=true`; `star_entry` pins entries — sweeps and retention pruning spare starred entries.
+- **Live notifications**: `subscriptions/listen` is served; every mutation that changes a resource pushes `notifications/resources/updated` for it (fetches, read-state changes, stars, subscription edits, pruning). Delivery is best-effort and isolated per listener.
+- **`daily-digest` prompt**: thin template driving `get_digest`; data lives in the tool so the prompt stays token-cheap.
+
+## 0.3.x — follow-ups
+
+- Filter parity on list/search: `tag` and `starred` filters on `list_entries`; `tag`, `unread_only`, `since` on `search_entries`.
+- Feed triage: `failing_only` on `list_subscriptions` plus a remediation hint per failing feed.
 
 ## 0.4.x — multi-user and auth
 

@@ -1,8 +1,7 @@
 from pathlib import Path
 
+from rss_mcp.config import _DEFAULT_USER_AGENT as DEFAULT_USER_AGENT
 from rss_mcp.config import load_settings
-
-DEFAULT_USER_AGENT = "rss-mcp/0.2 (+https://github.com/huangcheng/rss-mcp)"
 
 
 def test_load_settings_respects_rss_mcp_db_env(tmp_path, monkeypatch):
