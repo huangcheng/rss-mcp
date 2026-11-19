@@ -16,10 +16,12 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 - **Live notifications**: `subscriptions/listen` is served; every mutation that changes a resource pushes `notifications/resources/updated` for it (fetches, read-state changes, stars, subscription edits, pruning). Delivery is best-effort and isolated per listener.
 - **`daily-digest` prompt**: thin template driving `get_digest`; data lives in the tool so the prompt stays token-cheap.
 
-## 0.3.x — follow-ups
+## 0.3.1 — released 2026-11-19
 
-- Filter parity on list/search: `tag` and `starred` filters on `list_entries`; `tag`, `unread_only`, `since` on `search_entries`.
-- Feed triage: `failing_only` on `list_subscriptions` plus a remediation hint per failing feed.
+- **Digest diversity**: `get_digest(per_feed=3)` caps each source's contribution; copies stand in for keepers that sit deeper than the per-feed window, so syndicated articles never vanish from briefings.
+- **Plain-text snippets**: search snippets are cleaned with a real HTML parser (lxml), preserving escaped literals and dropping script/style bodies; residual angle brackets from mid-tag windows are neutralized.
+- **Filter parity**: `tag`/`starred` on `list_entries`; `tag`/`since` on `search_entries`.
+- **Feed triage**: `list_subscriptions(failing_only=true)` with per-feed `remediation` hints (status-anchored classification, TLS checked before HTTP codes).
 
 ## 0.4.x — multi-user and auth
 

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 from collections import deque
@@ -15,6 +16,7 @@ from typing import Annotated, Any
 from xml.etree.ElementTree import ParseError
 
 import anyio
+from lxml import html as lxml_html
 from mcp.server import MCPServer
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
@@ -285,11 +287,57 @@ def _summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+_HTML_TAG = re.compile(r"<[^>]+>")
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _clean_snippet(snippet: str | None) -> str | None:
+    # Real parser, not regex: handles entities, attributes containing '>',
+    # unclosed tags, and script/style bodies. Residual angle brackets from
+    # mid-tag snippet windows are neutralized so the plain-text contract holds.
+    if not snippet or not snippet.strip():
+        return None
+    try:
+        root = lxml_html.fromstring(snippet)
+        for bad in list(root.iter("script", "style")):
+            bad.drop_tree()
+        text = root.text_content()
+    except Exception:
+        text = _HTML_TAG.sub("", snippet)
+    text = text.replace("<", "").replace(">", "")
+    return _WHITESPACE.sub(" ", text).strip() or None
+
+
 def _entry_payload(entry: Entry, *, full: bool) -> dict[str, Any]:
     payload = asdict(entry)
     if not full:
         payload["content"] = None
+    payload["snippet"] = _clean_snippet(entry.snippet)
     return payload
+
+
+def _remediation_hint(sub: Subscription) -> str | None:
+    if not sub.last_error and not sub.disabled:
+        return None
+    if sub.disabled:
+        return (
+            "auto-disabled after repeated failures; fetch_feed(subscription_id) retries and "
+            "re-enables it, or remove_subscription to drop it"
+        )
+    error = (sub.last_error or "").lower()
+    # TLS first: OpenSSL messages embed line numbers that look like statuses.
+    if "ssl" in error or "certificate" in error or "tls" in error:
+        return "TLS/certificate problem at the source; retry later or remove_subscription"
+    # Anchor to the producer's exact "HTTP {code}" shape; bare substrings
+    # misfire on parse-error line numbers and URLs.
+    if error.startswith(("http 401", "http 403")):
+        return (
+            "likely bot protection; set a browser user_agent via update_subscription, "
+            "or remove_subscription"
+        )
+    if error.startswith(("http 404", "http 410")):
+        return "feed URL is gone; remove_subscription then add_subscription with the new url"
+    return "transient source error; retry with fetch_feed(subscription_id)"
 
 
 class _StaticTokenVerifier:
@@ -514,10 +562,21 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         return {"ok": removed}
 
     @server.tool()
-    async def list_subscriptions(tag: str | None = None, *, ctx: Context) -> dict[str, Any]:
-        """List subscriptions with unread counts, optionally filtered by an exact tag."""
-        rows = _app(ctx).store.list_subscriptions(tag=tag)
-        return {"subscriptions": [asdict(row) for row in rows]}
+    async def list_subscriptions(
+        tag: str | None = None,
+        failing_only: bool = False,
+        *, ctx: Context,
+    ) -> dict[str, Any]:
+        """List subscriptions with unread counts, optionally filtered by an exact tag. failing_only returns feeds with errors or auto-disabled, each with a remediation hint."""
+        rows = _app(ctx).store.list_subscriptions(tag=tag, failing_only=failing_only)
+        payloads = []
+        for row in rows:
+            payload = asdict(row)
+            hint = _remediation_hint(row)
+            if hint is not None:
+                payload["remediation"] = hint
+            payloads.append(payload)
+        return {"subscriptions": payloads}
 
     @server.tool()
     async def fetch_feed(subscription_id: int | None = None, *, ctx: Context) -> dict[str, Any]:
@@ -545,9 +604,11 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         limit: int | None = None,
         since: str | None = None,
         include_duplicates: bool = False,
+        tag: str | None = None,
+        starred: bool | None = None,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """List cached entries (bodies omitted). Cross-feed duplicates are hidden unless include_duplicates is set. since/before accept ISO 8601 timestamps. Limit falls back to the server default and is clamped."""
+        """List cached entries (bodies omitted). Cross-feed duplicates are hidden unless include_duplicates is set. Filter by tag or starred state. since/before accept ISO 8601 timestamps. Limit falls back to the server default and is clamped."""
         app = _app(ctx)
         if since is not None:
             since = _normalize_iso_timestamp(since, param="since")
@@ -557,6 +618,8 @@ def create_server(settings: Settings | None = None) -> MCPServer:
             limit=_limit(app.settings, limit),
             since=since,
             include_duplicates=include_duplicates,
+            tag=tag,
+            starred=starred,
         )
         return {"entries": [_entry_payload(row, full=False) for row in rows]}
 
@@ -594,16 +657,22 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         unread_only: bool = False,
         limit: int | None = None,
         include_duplicates: bool = False,
+        tag: str | None = None,
+        since: str | None = None,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """Full-text search over cached title, summary, and content, ranked by bm25 with a match snippet. Cross-feed duplicates are hidden unless include_duplicates is set. Omits entry bodies; use read_entry for full content."""
+        """Full-text search over cached title, summary, and content, ranked by bm25 with a plain-text match snippet. Filter by tag or since (ISO 8601). Cross-feed duplicates are hidden unless include_duplicates is set. Omits entry bodies; use read_entry for full content."""
         app = _app(ctx)
+        if since is not None:
+            since = _normalize_iso_timestamp(since, param="since")
         rows = app.store.search_entries(
             query,
             subscription_id=subscription_id,
             unread_only=unread_only,
             limit=_limit(app.settings, limit),
             include_duplicates=include_duplicates,
+            tag=tag,
+            since=since,
         )
         return {"entries": [_entry_payload(row, full=False) for row in rows]}
 
@@ -612,28 +681,47 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         since: str | None = None,
         tag: str | None = None,
         max_entries: int = 50,
+        per_feed: int = 3,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """One-call unread briefing: per-subscription unread groups plus the most recent unread entries (deduped, mute- and filter-aware, bodies omitted; since accepts ISO 8601). Follow up with read_entry for detail and mark_entry to catch up."""
+        """One-call unread briefing: per-subscription unread groups plus the most recent unread entries (deduped, mute- and filter-aware, bodies omitted; since accepts ISO 8601). per_feed caps each source's contribution (default 3) so high-volume feeds cannot monopolize the list. Follow up with read_entry for detail and mark_entry to catch up."""
         app = _app(ctx)
         if since is not None:
             since = _normalize_iso_timestamp(since, param="since")
         limit = _limit(app.settings, max_entries)
+        cap = max(1, min(per_feed, limit))
         active = [sub for sub in app.store.list_subscriptions(tag=tag) if not sub.muted]
-        if tag is not None:
-            # Tag scopes are per-subscription queries so the entry pool is not
-            # underfilled by non-tag feeds consuming the limit first.
-            pool: list[Entry] = []
-            for sub in active:
-                pool.extend(
-                    app.store.list_entries(
-                        subscription_id=sub.id, unread_only=True, since=since, limit=limit
-                    )
+        # Per-source queries keep the pool diverse. Duplicates are fetched and
+        # resolved at assembly so a copy can stand in when its keeper sits
+        # deeper than the per-feed window in another feed.
+        pool: list[Entry] = []
+        for sub in active:
+            # No zero-unread skip here: a feed whose only unread entries are
+            # duplicate copies (unread_count 0) must still contribute stand-ins.
+            pool.extend(
+                app.store.list_entries(
+                    subscription_id=sub.id,
+                    unread_only=True,
+                    since=since,
+                    limit=cap,
+                    include_duplicates=True,
                 )
-            pool.sort(key=lambda entry: (entry.published_at or "", entry.id), reverse=True)
-            entries = pool[:limit]
-        else:
-            entries = app.store.list_entries(unread_only=True, since=since, limit=limit)
+            )
+        pool.sort(key=lambda entry: (entry.published_at or "", entry.id), reverse=True)
+        entries: list[Entry] = []
+        taken_articles: set[int] = set()
+        per_feed_counts: dict[int, int] = {}
+        for entry in pool:
+            if len(entries) >= limit:
+                break
+            if per_feed_counts.get(entry.subscription_id, 0) >= cap:
+                continue
+            article = entry.duplicate_of if entry.duplicate_of is not None else entry.id
+            if article in taken_articles:
+                continue
+            taken_articles.add(article)
+            per_feed_counts[entry.subscription_id] = per_feed_counts.get(entry.subscription_id, 0) + 1
+            entries.append(entry)
         return {
             "generated_at": _utc_now(),
             "tag": tag,

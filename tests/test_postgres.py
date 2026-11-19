@@ -340,3 +340,32 @@ def test_sweeps_and_starring_mirror_sqlite_behavior(pg_store):
     pg_store.set_starred([entries["g2"].id], False)
     assert pg_store.mark_entries_bulk(tag="daily", read=False) == 0
     assert pg_store.get_subscription(sub.id).unread_count == 3
+
+
+def test_filter_parity_on_postgres(pg_store):
+    tech = pg_store.add_subscription("https://tech.example/f", tags=["tech"])
+    news = pg_store.add_subscription("https://news.example/f", tags=["news"])
+    pg_store.upsert_entries(
+        tech.id,
+        [
+            EntryInput(guid="t-old", title="Zephyr old", content="zephyr", published_at="2026-01-01T00:00:00Z"),
+            EntryInput(guid="t-new", title="Zephyr new", content="zephyr", published_at="2026-11-01T00:00:00Z"),
+        ],
+    )
+    pg_store.upsert_entries(
+        news.id,
+        [EntryInput(guid="n1", title="Zephyr news", content="zephyr", published_at="2026-11-01T00:00:00Z")],
+    )
+    assert {e.guid for e in pg_store.list_entries(tag="tech")} == {"t-old", "t-new"}
+    assert {e.guid for e in pg_store.search_entries("zephyr", tag="news")} == {"n1"}
+    assert {e.guid for e in pg_store.search_entries("zephyr", since="2026-06-01T00:00:00Z")} == {"t-new", "n1"}
+
+    new_id = next(e.id for e in pg_store.list_entries(limit=10) if e.guid == "t-new")
+    pg_store.set_starred([new_id], True)
+    assert {e.guid for e in pg_store.list_entries(starred=True)} == {"t-new"}
+    assert "t-new" not in {e.guid for e in pg_store.list_entries(starred=False)}
+
+    assert pg_store.list_subscriptions(failing_only=True) == []
+    pg_store.record_fetch_failure(news.id, "HTTP 403")
+    failing = pg_store.list_subscriptions(failing_only=True)
+    assert [s.id for s in failing] == [news.id]

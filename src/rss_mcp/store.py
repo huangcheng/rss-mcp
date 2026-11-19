@@ -286,12 +286,17 @@ class Store:
             self._reelect_keepers()
         return cursor.rowcount > 0
 
-    def list_subscriptions(self, tag: str | None = None) -> list[Subscription]:
+    def list_subscriptions(self, tag: str | None = None, failing_only: bool = False) -> list[Subscription]:
         sql = _SUBSCRIPTION_SQL
+        clauses: list[str] = []
         params: list[object] = []
         if tag is not None:
-            sql += " WHERE " + self._dialect.tags_exists("s")
+            clauses.append(self._dialect.tags_exists("s"))
             params.append(tag)
+        if failing_only:
+            clauses.append("(s.last_error IS NOT NULL OR s.disabled = 1)")
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         rows = self._conn.execute(sql + " ORDER BY s.id", params).fetchall()
         return [_subscription_from_row(row) for row in rows]
 
@@ -569,6 +574,12 @@ class Store:
         ).fetchall()
         return {row["guid"]: int(row["filtered"]) for row in rows}
 
+    def _tag_exists_clause(self) -> str:
+        return (
+            "EXISTS (SELECT 1 FROM subscriptions AS ts"
+            f" WHERE ts.id = e.subscription_id AND {self._dialect.tags_exists('ts')})"
+        )
+
     def list_entries(
         self,
         *,
@@ -577,6 +588,8 @@ class Store:
         limit: int = 20,
         since: str | None = None,
         include_duplicates: bool = False,
+        tag: str | None = None,
+        starred: bool | None = None,
     ) -> list[Entry]:
         clauses: list[str] = []
         params: list[object] = []
@@ -593,6 +606,11 @@ class Store:
                 "NOT EXISTS (SELECT 1 FROM subscriptions AS ms"
                 " WHERE ms.id = e.subscription_id AND ms.muted = 1)"
             )
+        if tag is not None:
+            clauses.append(self._tag_exists_clause())
+            params.append(tag)
+        if starred is not None:
+            clauses.append("es.starred = 1" if starred else "COALESCE(es.starred, 0) = 0")
         if unread_only:
             clauses.append("es.read_at IS NULL")
         if since is not None:
@@ -656,6 +674,8 @@ class Store:
         unread_only: bool = False,
         limit: int = 20,
         include_duplicates: bool = False,
+        tag: str | None = None,
+        since: str | None = None,
     ) -> list[Entry]:
         extra_clauses: list[str] = []
         extra_params: list[Any] = []
@@ -670,6 +690,12 @@ class Store:
                 "NOT EXISTS (SELECT 1 FROM subscriptions AS ms"
                 " WHERE ms.id = e.subscription_id AND ms.muted = 1)"
             )
+        if tag is not None:
+            extra_clauses.append(self._tag_exists_clause())
+            extra_params.append(tag)
+        if since is not None:
+            extra_clauses.append("e.published_at >= ?")
+            extra_params.append(since)
         if unread_only:
             extra_clauses.append("es.read_at IS NULL")
         built = self._dialect.search_sql(
