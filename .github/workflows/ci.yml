@@ -13,7 +13,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked --extra otel
@@ -26,7 +26,7 @@ jobs:
         working-directory: scheduler
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -51,7 +51,7 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.13"
       - run: uv sync --extra postgres
@@ -65,7 +65,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.13"
       - run: uv build
