@@ -20,6 +20,8 @@ from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
+from mcp.server.subscriptions import InMemorySubscriptionBus
+from mcp.shared.subscriptions import ResourceUpdated
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -43,6 +45,28 @@ _BACKOFF_CAP_SECONDS = 3600
 class _App:
     settings: Settings
     store: Store
+    # Subscription bus for notifications/resources/updated; set when the
+    # server serves subscriptions/listen so refreshes can push to listeners.
+    events: InMemorySubscriptionBus | None = None
+
+
+_UNREAD_URI = "rss://entries/unread"
+_SUBSCRIPTIONS_URI = "rss://subscriptions"
+
+
+async def _notify(app: _App, *uris: str) -> None:
+    """Push notifications/resources/updated for the given URIs.
+
+    Delivery is best-effort: nobody listening is fine, and a broken listener
+    must never fail the mutation that triggered the notification.
+    """
+    if app.events is None:
+        return
+    for uri in uris:
+        try:
+            await app.events.publish(ResourceUpdated(uri=uri))
+        except Exception:
+            logger.exception("failed to publish resource update notification for %s", uri)
 
 
 def _utc_now() -> str:
@@ -201,7 +225,14 @@ async def _refresh_all(app: _App) -> dict[str, Any]:
                 results[sub.id] = _skipped(sub, "backoff")
             else:
                 tg.start_soon(worker, sub)
-    return _summary([results[sub.id] for sub in subs])
+    summary = _summary([results[sub.id] for sub in subs])
+    # Fetch metadata (last_fetched_at, health) changes on every completed
+    # pass; new entries additionally change the unread resource.
+    if summary["upserted"] > 0:
+        await _notify(app, _UNREAD_URI, _SUBSCRIPTIONS_URI)
+    else:
+        await _notify(app, _SUBSCRIPTIONS_URI)
+    return summary
 
 
 async def _scheduler_loop(app: _App) -> None:
@@ -210,18 +241,21 @@ async def _scheduler_loop(app: _App) -> None:
         await anyio.sleep(interval)
         try:
             await _refresh_all(app)
-            _prune(app)
+            if _prune(app) > 0:
+                # Pruning removes unread entries; listeners' unread views are
+                # now stale even though nothing was upserted.
+                await _notify(app, _UNREAD_URI, _SUBSCRIPTIONS_URI)
         except Exception:
             logger.exception("scheduled refresh failed")
 
 
-def _app_lifespan(settings: Settings, holder: dict[str, _App]):
+def _app_lifespan(settings: Settings, holder: dict[str, _App], events: InMemorySubscriptionBus | None):
     @asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[_App]:
         conn = connect_db(settings)
         try:
             init_db(conn)
-            app = _App(settings=settings, store=Store(conn))
+            app = _App(settings=settings, store=Store(conn), events=events)
             holder["app"] = app
             if settings.refresh_interval:
                 async with anyio.create_task_group() as tg:
@@ -343,11 +377,15 @@ def create_server(settings: Settings | None = None) -> MCPServer:
             "auth": AuthSettings(issuer_url="http://localhost/", resource_server_url=None),
             "token_verifier": _StaticTokenVerifier(tokens),
         }
+    # Serving subscriptions/listen lets hosts wait for
+    # notifications/resources/updated instead of polling; the bus is also the
+    # seam refreshes publish to (see _notify).
+    bus = InMemorySubscriptionBus()
     server = MCPServer(
         "rss-mcp",
         version=__version__,
-        subscriptions=False,
-        lifespan=_app_lifespan(resolved, holder),
+        subscriptions=bus,
+        lifespan=_app_lifespan(resolved, holder, bus),
         **auth,
     )
     handlers = server._lowlevel_server._request_handlers
@@ -361,7 +399,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         return app
 
     @server.resource(
-        "rss://subscriptions",
+        _SUBSCRIPTIONS_URI,
         name="subscriptions",
         description="All RSS subscriptions with unread counts and fetch health.",
         mime_type="application/json",
@@ -374,7 +412,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         )
 
     @server.resource(
-        "rss://entries/unread",
+        _UNREAD_URI,
         name="unread_entries",
         description="Most recent unread entries across all subscriptions (bodies omitted, cross-feed duplicates excluded).",
         mime_type="application/json",
@@ -400,7 +438,8 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         *, ctx: Context,
     ) -> dict[str, Any]:
         """Add a feed by URL. Repeating a URL returns the existing subscription. Optional per-feed user_agent/headers override the defaults. include_keywords/exclude_keywords hide entries whose title or summary does not match (or does match, case-insensitive substring); muted keeps the feed fetched but hides it from aggregate views."""
-        sub = _app(ctx).store.add_subscription(
+        app = _app(ctx)
+        sub = app.store.add_subscription(
             url,
             title=title,
             tags=tags,
@@ -410,6 +449,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
             include_keywords=include_keywords,
             exclude_keywords=exclude_keywords,
         )
+        await _notify(app, _SUBSCRIPTIONS_URI)
         return asdict(sub)
 
     @server.tool()
@@ -440,12 +480,21 @@ def create_server(settings: Settings | None = None) -> MCPServer:
             include_keywords=include_keywords,
             exclude_keywords=exclude_keywords,
         )
+        # Mute and keyword rules change which entries readers see.
+        if muted is not None or include_keywords is not None or exclude_keywords is not None:
+            await _notify(app, _SUBSCRIPTIONS_URI, _UNREAD_URI)
+        else:
+            await _notify(app, _SUBSCRIPTIONS_URI)
         return asdict(app.store.get_subscription(subscription_id))
 
     @server.tool()
     async def remove_subscription(subscription_id: int, *, ctx: Context) -> dict[str, Any]:
         """Delete a subscription and its cached entries."""
-        return {"ok": _app(ctx).store.remove_subscription(subscription_id)}
+        app = _app(ctx)
+        removed = app.store.remove_subscription(subscription_id)
+        if removed:
+            await _notify(app, _SUBSCRIPTIONS_URI, _UNREAD_URI)
+        return {"ok": removed}
 
     @server.tool()
     async def list_subscriptions(tag: str | None = None, *, ctx: Context) -> dict[str, Any]:
@@ -465,7 +514,12 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         if sub.disabled:
             app.store.update_subscription(subscription_id, disabled=False)
             sub = app.store.get_subscription(subscription_id)
-        return _summary([await _refresh(app, sub)])
+        summary = _summary([await _refresh(app, sub)])
+        if summary["upserted"] > 0:
+            await _notify(app, _UNREAD_URI, _SUBSCRIPTIONS_URI)
+        else:
+            await _notify(app, _SUBSCRIPTIONS_URI)
+        return summary
 
     @server.tool()
     async def list_entries(
@@ -509,10 +563,11 @@ def create_server(settings: Settings | None = None) -> MCPServer:
                 if refreshed is not None:
                     entry = refreshed
         if mark_read:
-            app.store.mark_entries([entry_id], True)
-            refreshed = app.store.get_entry(entry_id)
-            if refreshed is not None:
-                entry = refreshed
+            if app.store.mark_entries([entry_id], True):
+                refreshed = app.store.get_entry(entry_id)
+                if refreshed is not None:
+                    entry = refreshed
+                await _notify(app, _UNREAD_URI, _SUBSCRIPTIONS_URI)
         return _entry_payload(entry, full=True)
 
     @server.tool()
@@ -599,17 +654,20 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         if (has_ids or subscription_id is not None) and sweep:
             raise ToolError("tag/before/all cannot be combined with entry_ids or subscription_id")
         if sweep:
-            return {"updated": app.store.mark_entries_bulk(tag=tag, before=before, read=read)}
-        if subscription_id is not None:
+            updated = app.store.mark_entries_bulk(tag=tag, before=before, read=read)
+        elif subscription_id is not None:
             if app.store.get_subscription(subscription_id) is None:
                 raise ToolError(f"subscription not found: {subscription_id}")
             updated = app.store.mark_subscription_entries(subscription_id, read)
             if has_ids:
                 updated += app.store.mark_entries(entry_ids, read)
-            return {"updated": updated}
-        if has_ids:
-            return {"updated": app.store.mark_entries(entry_ids, read)}
-        raise ToolError("provide entry_ids, subscription_id, tag, before, or all")
+        elif has_ids:
+            updated = app.store.mark_entries(entry_ids, read)
+        else:
+            raise ToolError("provide entry_ids, subscription_id, tag, before, or all")
+        if updated:
+            await _notify(app, _UNREAD_URI, _SUBSCRIPTIONS_URI)
+        return {"updated": updated}
 
     @server.tool()
     async def star_entry(
@@ -618,7 +676,11 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         *, ctx: Context,
     ) -> dict[str, Any]:
         """Star (pin) or unstar entries. Starred entries are spared by catch-up sweeps and retention pruning. Unknown ids are skipped."""
-        return {"updated": _app(ctx).store.set_starred(entry_ids, starred)}
+        app = _app(ctx)
+        updated = app.store.set_starred(entry_ids, starred)
+        if updated:
+            await _notify(app, _UNREAD_URI)
+        return {"updated": updated}
 
     @server.tool()
     async def import_opml(opml: str, *, ctx: Context) -> dict[str, Any]:
@@ -627,17 +689,19 @@ def create_server(settings: Settings | None = None) -> MCPServer:
             feeds = parse_opml(opml)
         except ParseError as exc:
             raise ToolError("invalid OPML") from exc
-        store = _app(ctx).store
-        known = {sub.id for sub in store.list_subscriptions()}
+        app = _app(ctx)
+        known = {sub.id for sub in app.store.list_subscriptions()}
         added = 0
         skipped = 0
         for url, title, tags in feeds:
-            sub = store.add_subscription(url, title=title, tags=tags or None)
+            sub = app.store.add_subscription(url, title=title, tags=tags or None)
             if sub.id in known:
                 skipped += 1
             else:
                 known.add(sub.id)
                 added += 1
+        if added:
+            await _notify(app, _SUBSCRIPTIONS_URI)
         return {"added": added, "skipped": skipped}
 
     @server.tool()

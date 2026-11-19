@@ -80,8 +80,8 @@ async def test_tools_list_is_exactly_the_fourteen_tools_in_table_order(server_se
     assert caps.prompts is None
     assert info is not None
     assert info.version == "0.2.0"
-    # subscriptions=False: hosts should not expect a live tools listChanged stream
-    assert "subscriptions/listen" not in server._lowlevel_server._request_handlers
+    # subscriptions/listen is served: hosts can wait for resource updates.
+    assert "subscriptions/listen" in server._lowlevel_server._request_handlers
 
 
 @pytest.mark.asyncio
@@ -953,3 +953,50 @@ async def test_catch_up_sweeps_and_star_pin_through_tools(server_settings: Setti
 
         unstarred = await _ok(client, "star_entry", {"entry_ids": [pinned.id], "starred": False})
         assert unstarred == {"updated": 1}
+
+
+@pytest.mark.asyncio
+async def test_refresh_pushes_resource_updated_to_listeners(
+    server_settings: Settings, monkeypatch
+) -> None:
+    import asyncio
+
+    from mcp.shared.subscriptions import ResourceUpdated
+
+    from rss_mcp import server
+    from rss_mcp.models import EntryInput
+
+    async def fake_fetch(url: str, **kwargs) -> FetchResult:
+        return FetchResult(
+            status="ok",
+            entries=[EntryInput(guid="g1", url="https://x.example/1", title="Fresh")],
+            etag=None,
+            last_modified=None,
+            feed_title=None,
+            error=None,
+        )
+
+    monkeypatch.setattr(server, "fetch_feed", fake_fetch)
+    async with Client(server.create_server(server_settings)) as client:
+        added = await _ok(client, "add_subscription", {"url": "https://a.example/f"})
+        async with client.listen(resource_subscriptions=["rss://entries/unread"]) as subscription:
+            await _ok(client, "fetch_feed", {"subscription_id": added["id"]})
+            async with asyncio.timeout(5):
+                event = await anext(subscription)
+            assert isinstance(event, ResourceUpdated)
+            assert event.uri == "rss://entries/unread"
+
+            # An unchanged refetch writes nothing and must not notify
+            # the unread resource (fetch metadata only touches subscriptions).
+            await _ok(client, "fetch_feed", {"subscription_id": added["id"]})
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(1):
+                    await anext(subscription)
+
+        # Mutations push too: catching up empties the unread resource.
+        async with client.listen(resource_subscriptions=["rss://entries/unread"]) as subscription:
+            await _ok(client, "mark_entry", {"all": True})
+            async with asyncio.timeout(5):
+                event = await anext(subscription)
+            assert isinstance(event, ResourceUpdated)
+            assert event.uri == "rss://entries/unread"
