@@ -514,6 +514,49 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         return {"entries": [_entry_payload(row, full=False) for row in rows]}
 
     @server.tool()
+    async def get_digest(
+        since: str | None = None,
+        tag: str | None = None,
+        max_entries: int = 50,
+        *, ctx: Context,
+    ) -> dict[str, Any]:
+        """One-call unread briefing: per-subscription unread groups plus the most recent unread entries (deduped, mute- and filter-aware, bodies omitted). Follow up with read_entry for detail and mark_entry to catch up."""
+        app = _app(ctx)
+        limit = _limit(app.settings, max_entries)
+        active = [sub for sub in app.store.list_subscriptions(tag=tag) if not sub.muted]
+        if tag is not None:
+            # Tag scopes are per-subscription queries so the entry pool is not
+            # underfilled by non-tag feeds consuming the limit first.
+            pool: list[Entry] = []
+            for sub in active:
+                pool.extend(
+                    app.store.list_entries(
+                        subscription_id=sub.id, unread_only=True, since=since, limit=limit
+                    )
+                )
+            pool.sort(key=lambda entry: (entry.published_at or "", entry.id), reverse=True)
+            entries = pool[:limit]
+        else:
+            entries = app.store.list_entries(unread_only=True, since=since, limit=limit)
+        return {
+            "generated_at": _utc_now(),
+            "tag": tag,
+            "since": since,
+            "total_unread": sum(sub.unread_count for sub in active),
+            "subscriptions": [
+                {
+                    "id": sub.id,
+                    "title": sub.title,
+                    "tags": sub.tags,
+                    "unread_count": sub.unread_count,
+                }
+                for sub in active
+                if sub.unread_count > 0
+            ],
+            "entries": [_entry_payload(entry, full=False) for entry in entries],
+        }
+
+    @server.tool()
     async def mark_entry(
         entry_ids: list[int] | None = None,
         subscription_id: int | None = None,

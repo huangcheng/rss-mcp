@@ -22,6 +22,7 @@ TOOL_NAMES = [
     "list_entries",
     "read_entry",
     "search_entries",
+    "get_digest",
     "mark_entry",
     "import_opml",
     "export_opml",
@@ -61,7 +62,7 @@ async def _ok(client: Client, name: str, arguments: dict | None = None) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_tools_list_is_exactly_the_twelve_tools_in_table_order(server_settings: Settings) -> None:
+async def test_tools_list_is_exactly_the_thirteen_tools_in_table_order(server_settings: Settings) -> None:
     # Drops a tool, renames one, or lists them in a different order.
     from rss_mcp.server import create_server
 
@@ -837,3 +838,67 @@ async def test_muted_subscription_hidden_from_aggregates_through_tools(
         assert [entry["guid"] for entry in aggregate["entries"]] == ["l1"]
         explicit = await _ok(client, "list_entries", {"subscription_id": quiet.id})
         assert [entry["guid"] for entry in explicit["entries"]] == ["q1"]
+
+
+@pytest.mark.asyncio
+async def test_get_digest_groups_unread_and_omits_bodies(server_settings: Settings) -> None:
+    from rss_mcp.server import create_server
+
+    conn, store = _open_store(server_settings)
+    tech = store.add_subscription("https://tech.example/f", tags=["tech"])
+    quiet = store.add_subscription("https://quiet.example/f")
+    store.upsert_entries(
+        tech.id,
+        [
+            EntryInput(guid="t1", url="https://t.example/1", title="Old", summary="s",
+                       content="body", published_at="2026-11-01T00:00:00Z"),
+            EntryInput(guid="t2", url="https://t.example/2", title="New", summary="s",
+                       content="body", published_at="2026-11-02T00:00:00Z"),
+        ],
+    )
+    store.upsert_entries(
+        quiet.id,
+        [EntryInput(guid="q1", url="https://q.example/1", title="Muted", content="body")],
+    )
+    old = next(e for e in store.list_entries(subscription_id=tech.id, limit=10) if e.guid == "t1")
+    store.mark_entries([old.id], True)
+    store.update_subscription(quiet.id, muted=True)
+    conn.close()
+
+    async with Client(create_server(server_settings)) as client:
+        digest = await _ok(client, "get_digest", {})
+        assert digest["total_unread"] == 1
+        assert [group["id"] for group in digest["subscriptions"]] == [tech.id]
+        assert digest["subscriptions"][0]["unread_count"] == 1
+        assert [entry["guid"] for entry in digest["entries"]] == ["t2"]
+        assert digest["entries"][0]["content"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_digest_tag_scope_and_limit(server_settings: Settings) -> None:
+    from rss_mcp.server import create_server
+
+    conn, store = _open_store(server_settings)
+    news = store.add_subscription("https://news.example/f", tags=["news"])
+    other = store.add_subscription("https://other.example/f", tags=["misc"])
+    store.upsert_entries(
+        news.id,
+        [EntryInput(guid=f"n{i}", url=f"https://n.example/{i}", title=f"News {i}",
+                    published_at=f"2026-11-0{i + 1}T00:00:00Z") for i in range(3)],
+    )
+    store.upsert_entries(
+        other.id,
+        [EntryInput(guid="o1", url="https://o.example/1", title="Newest of all",
+                    published_at="2026-11-09T00:00:00Z")],
+    )
+    conn.close()
+
+    async with Client(create_server(server_settings)) as client:
+        tagged = await _ok(client, "get_digest", {"tag": "news", "max_entries": 2})
+        assert tagged["tag"] == "news"
+        assert [group["id"] for group in tagged["subscriptions"]] == [news.id]
+        # Scope keeps the other feed's newer entry out; the cap holds at 2.
+        assert [entry["guid"] for entry in tagged["entries"]] == ["n2", "n1"]
+
+        clamped = await _ok(client, "get_digest", {"max_entries": 500})
+        assert len(clamped["entries"]) == 4

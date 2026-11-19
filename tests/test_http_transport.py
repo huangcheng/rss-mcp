@@ -12,20 +12,7 @@ from mcp import Client
 
 from rss_mcp.config import Settings
 
-TOOL_NAMES = [
-    "add_subscription",
-    "update_subscription",
-    "remove_subscription",
-    "list_subscriptions",
-    "fetch_feed",
-    "list_entries",
-    "read_entry",
-    "search_entries",
-    "mark_entry",
-    "import_opml",
-    "export_opml",
-    "discover_feed",
-]
+from test_server_tools import TOOL_NAMES
 
 
 class _RunRecorder:
