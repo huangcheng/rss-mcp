@@ -1104,6 +1104,7 @@ dependencies = [
     { name = "httpx" },
     { name = "lxml" },
     { name = "mcp" },
+    { name = "pydantic" },
     { name = "readability-lxml" },
 ]
 
@@ -1125,6 +1126,7 @@ requires-dist = [
     { name = "lxml" },
     { name = "mcp", specifier = ">=2.3,<3" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
+    { name = "pydantic", specifier = ">=2,<3" },
     { name = "readability-lxml" },
 ]
 provides-extras = ["postgres"]

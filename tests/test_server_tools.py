@@ -77,7 +77,7 @@ async def test_tools_list_is_exactly_the_fourteen_tools_in_table_order(server_se
     assert [tool.name for tool in listed.tools] == TOOL_NAMES
     assert caps.tools is not None
     assert caps.resources is not None
-    assert caps.prompts is None
+    assert caps.prompts is not None
     assert info is not None
     assert info.version == "0.2.0"
     # subscriptions/listen is served: hosts can wait for resource updates.
@@ -1000,3 +1000,36 @@ async def test_refresh_pushes_resource_updated_to_listeners(
                 event = await anext(subscription)
             assert isinstance(event, ResourceUpdated)
             assert event.uri == "rss://entries/unread"
+
+
+@pytest.mark.asyncio
+async def test_daily_digest_prompt_lists_and_renders(server_settings: Settings) -> None:
+    from rss_mcp.server import create_server
+
+    async with Client(create_server(server_settings)) as client:
+        listed = await client.list_prompts()
+        assert [prompt.name for prompt in listed.prompts] == ["daily-digest"]
+        args = {argument.name for argument in listed.prompts[0].arguments or []}
+        assert args == {"max_entries", "tag"}
+
+        plain = await client.get_prompt("daily-digest", {})
+        text = "\n".join(
+            block.text
+            for message in plain.messages
+            for block in (message.content if isinstance(message.content, list) else [message.content])
+            if hasattr(block, "text")
+        )
+        assert "get_digest" in text
+        assert "max_entries=20" in text
+        assert "all subscriptions" in text
+
+        # MCP transports prompt arguments as strings; the SDK casts on call.
+        tagged = await client.get_prompt("daily-digest", {"tag": "news", "max_entries": "5"})
+        tagged_text = "\n".join(
+            block.text
+            for message in tagged.messages
+            for block in (message.content if isinstance(message.content, list) else [message.content])
+            if hasattr(block, "text")
+        )
+        assert 'tag="news"' in tagged_text
+        assert "max_entries=5" in tagged_text

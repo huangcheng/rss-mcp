@@ -12,6 +12,7 @@ dependencies = [
     "feedparser",
     "readability-lxml",
     "lxml",
+    "pydantic>=2,<3",
 ]
 
 [project.urls]

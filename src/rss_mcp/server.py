@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Annotated, Any
 from xml.etree.ElementTree import ParseError
 
 import anyio
@@ -22,6 +22,7 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.server.subscriptions import InMemorySubscriptionBus
 from mcp.shared.subscriptions import ResourceUpdated
+from pydantic import Field
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -291,11 +292,6 @@ def _entry_payload(entry: Entry, *, full: bool) -> dict[str, Any]:
     return payload
 
 
-# MCPServer always installs prompt handlers; v1 exposes no prompts, so those
-# methods are removed before the first discover. Resources are served.
-_SDK_PROMPT_METHODS = ("prompts/get", "prompts/list")
-
-
 class _StaticTokenVerifier:
     """Accepts any of the configured shared bearer tokens."""
 
@@ -388,9 +384,6 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         lifespan=_app_lifespan(resolved, holder, bus),
         **auth,
     )
-    handlers = server._lowlevel_server._request_handlers
-    for method in _SDK_PROMPT_METHODS:
-        handlers.pop(method, None)
 
     def _resource_app() -> _App:
         app = holder.get("app")
@@ -423,6 +416,30 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         return json.dumps(
             {"entries": [_entry_payload(row, full=False) for row in rows]},
             ensure_ascii=False,
+        )
+
+    @server.prompt(
+        name="daily-digest",
+        title="Daily digest",
+        description="Brief the user on unread feed entries using the get_digest tool.",
+    )
+    async def daily_digest(
+        max_entries: Annotated[int, Field(description="Entry cap passed to get_digest.")] = 20,
+        tag: Annotated[str | None, Field(description="Restrict the digest to one tag.")] = None,
+    ) -> str:
+        scope = f'tag "{tag}"' if tag else "all subscriptions"
+        return (
+            "Brief the user on their unread RSS/Atom entries.\n"
+            "1. Call the get_digest tool with "
+            + (f'tag="{tag}" and ' if tag else "")
+            + f"max_entries={max_entries}.\n"
+            f"2. Cover {scope}: for each subscription in the digest give its title and unread"
+            " count, then one line per notable entry (title and URL). Base every line on the"
+            " returned summaries — do not invent details; entry bodies are omitted from the"
+            " digest.\n"
+            "3. Close by offering to open any entry in full with read_entry, and to catch up"
+            " afterwards with mark_entry (all=True) — sweeps spare starred entries.\n"
+            "4. If the digest has no unread entries, say so in one sentence and stop."
         )
 
     @server.tool()
