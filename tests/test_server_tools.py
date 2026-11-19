@@ -748,6 +748,8 @@ async def test_read_entry_mark_read_default_false_and_true(
 
 def test_main_runs_the_stdio_server(monkeypatch: pytest.MonkeyPatch) -> None:
     # Leaves the Task 1 NotImplementedError in place, or selects another transport.
+    import sys
+
     from rss_mcp.server import MCPServer, main
 
     seen: dict[str, object] = {}
@@ -758,6 +760,9 @@ def test_main_runs_the_stdio_server(monkeypatch: pytest.MonkeyPatch) -> None:
         seen["kwargs"] = kwargs
 
     monkeypatch.setattr(MCPServer, "run", fake_run)
+    # main(argv=None) reads sys.argv; pin it so pytest's own CLI args
+    # (invisible when CI runs bare pytest via testpaths) don't leak in.
+    monkeypatch.setattr(sys, "argv", ["rss-mcp"])
     from rss_mcp.__main__ import main as console_main
 
     console_main()
