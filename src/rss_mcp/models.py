@@ -22,6 +22,7 @@ class Subscription:
     muted: bool = False
     include_keywords: list[str] = field(default_factory=list)
     exclude_keywords: list[str] = field(default_factory=list)
+    fetch_interval: int | None = None
 
 
 @dataclass

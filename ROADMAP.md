@@ -23,18 +23,17 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 - **Filter parity**: `tag`/`starred` on `list_entries`; `tag`/`since` on `search_entries`.
 - **Feed triage**: `list_subscriptions(failing_only=true)` with per-feed `remediation` hints (status-anchored classification, TLS checked before HTTP codes).
 
-## 0.4.x — multi-user and auth
+## 0.3.2 — released 2026-11-19
 
-- Per-user databases (or row-level ownership) with token → user mapping.
-- OAuth2 via the SDK's native auth server; token scopes (read-only hosts vs management hosts).
-- Per-token rate-limit tiers.
+- **Per-feed fetch intervals**: `fetch_interval` (seconds) on add/update_subscription gates bulk fetches per source (weekly feeds stop being knocked every 30 minutes); manual fetch by id always bypasses; `0` clears back to the global cadence.
+- **CI uvx stdio smoke test**: builds the wheel, installs via uvx, runs a full MCP session against a local fixture feed — the host install path is now guarded on every push.
+- **CI matrix extended to Python 3.14/3.15**; dependabot weekly for uv (root + scheduler) and GitHub Actions.
 
 ## 0.5.x — robustness and observability
 
 - Prometheus `/metrics` (fetch latency, failure rates, queue depth).
 - Structured logging; `export-db` / `import-db` backup and migration tools.
 - Optional `curl_cffi` extra for TLS-impersonation fetches against bot-walled feeds.
-- Python 3.14/3.15 support; dependabot for dependency updates.
 
 ## 1.0.0 — stability commitment
 
@@ -44,6 +43,7 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 
 ## Not planned
 
+- Multi-user / OAuth / per-user databases (user decision 2026-11-19: single-user product).
 - robots.txt checks for feeds (a feed URL is an explicit invitation to syndicate).
 - GUI / TUI / interactive CLI.
 - Built-in LLM summarization (hosts summarize; the server carries no model dependency).

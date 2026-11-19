@@ -52,6 +52,7 @@ SELECT
     s.muted,
     s.include_keywords,
     s.exclude_keywords,
+    s.fetch_interval,
     (
         SELECT COUNT(*)
         FROM entries AS e
@@ -81,6 +82,10 @@ def _clean_keywords(keywords: list[str] | None) -> list[str]:
     if not keywords:
         return []
     return [keyword.strip() for keyword in keywords if keyword.strip()]
+
+
+def _clean_interval(value: int | None) -> int | None:
+    return value if value and value > 0 else None
 
 
 def _entry_filtered(
@@ -165,6 +170,7 @@ def _subscription_from_row(row: Any) -> Subscription:
         muted=bool(row["muted"]),
         include_keywords=_tags_from_column(row["include_keywords"]),
         exclude_keywords=_tags_from_column(row["exclude_keywords"]),
+        fetch_interval=row["fetch_interval"],
     )
 
 
@@ -248,13 +254,14 @@ class Store:
         muted: bool = False,
         include_keywords: list[str] | None = None,
         exclude_keywords: list[str] | None = None,
+        fetch_interval: int | None = None,
     ) -> Subscription:
         normalized = url.strip()
         self._conn.execute(
             f"""INSERT {self._dialect.insert_ignore} INTO subscriptions
                    (url, title, tags, created_at, user_agent, headers,
-                    muted, include_keywords, exclude_keywords)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?){self._dialect.conflict_nothing}""",
+                    muted, include_keywords, exclude_keywords, fetch_interval)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?){self._dialect.conflict_nothing}""",
             (
                 normalized,
                 title,
@@ -265,6 +272,7 @@ class Store:
                 int(muted),
                 json.dumps(_clean_keywords(include_keywords)),
                 json.dumps(_clean_keywords(exclude_keywords)),
+                _clean_interval(fetch_interval),
             ),
         )
         self._conn.commit()
@@ -312,6 +320,7 @@ class Store:
         muted: bool | None = None,
         include_keywords: list[str] | None = None,
         exclude_keywords: list[str] | None = None,
+        fetch_interval: int | None = None,
     ) -> bool:
         assignments: list[str] = []
         params: list[object] = []
@@ -342,6 +351,9 @@ class Store:
         if exclude_keywords is not None:
             assignments.append("exclude_keywords = ?")
             params.append(json.dumps(_clean_keywords(exclude_keywords)))
+        if fetch_interval is not None:
+            assignments.append("fetch_interval = ?")
+            params.append(_clean_interval(fetch_interval))
         if not assignments:
             return False
         params.append(subscription_id)

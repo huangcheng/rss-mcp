@@ -7,11 +7,6 @@ neither is available or psycopg is not installed.
 
 from __future__ import annotations
 
-import os
-import shutil
-import socket
-import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -22,50 +17,6 @@ from rss_mcp.config import Settings
 from rss_mcp.db import connect_db, init_db
 from rss_mcp.models import EntryInput
 from rss_mcp.store import Store
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-@pytest.fixture(scope="module")
-def pg_url():
-    env_url = os.environ.get("RSS_MCP_TEST_PG_URL")
-    if env_url:
-        yield env_url
-        return
-    if not shutil.which("docker"):
-        pytest.skip("docker not available for PostgreSQL tests")
-    port = _free_port()
-    name = f"rss-mcp-test-pg-{port}"
-    try:
-        subprocess.run(
-            [
-                "docker", "run", "-d", "--rm", "--name", name,
-                "-e", "POSTGRES_PASSWORD=test", "-e", "POSTGRES_DB=rss_test",
-                "-p", f"127.0.0.1:{port}:5432", "postgres:16-alpine",
-            ],
-            check=True,
-            capture_output=True,
-        )
-    except (subprocess.CalledProcessError, OSError) as exc:
-        pytest.skip(f"docker not usable for PostgreSQL tests: {exc}")
-    url = f"postgresql://postgres:test@127.0.0.1:{port}/rss_test"
-    deadline = time.time() + 90
-    while time.time() < deadline:
-        try:
-            with psycopg.connect(url, connect_timeout=2) as conn:
-                conn.execute("SELECT 1")
-            break
-        except Exception:
-            time.sleep(1)
-    else:
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
-        pytest.skip("PostgreSQL container did not become ready")
-    yield url
-    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
 
 def _settings(pg_url: str) -> Settings:
@@ -340,6 +291,27 @@ def test_sweeps_and_starring_mirror_sqlite_behavior(pg_store):
     pg_store.set_starred([entries["g2"].id], False)
     assert pg_store.mark_entries_bulk(tag="daily", read=False) == 0
     assert pg_store.get_subscription(sub.id).unread_count == 3
+
+
+def test_fetch_interval_roundtrip_on_postgres(pg_store):
+    sub = pg_store.add_subscription("https://pg-interval.example/f", fetch_interval=7200)
+    assert pg_store.get_subscription(sub.id).fetch_interval == 7200
+    pg_store.update_subscription(sub.id, fetch_interval=0)
+    assert pg_store.get_subscription(sub.id).fetch_interval is None
+
+
+def test_pg_migration_restores_fetch_interval(pg_url):
+    # Simulate a pre-0.3.2 database: drop the column, re-init must restore it.
+    settings = _settings(pg_url)
+    conn = connect_db(settings)
+    init_db(conn)
+    conn.execute("ALTER TABLE subscriptions DROP COLUMN IF EXISTS fetch_interval")
+    conn.commit()
+    init_db(conn)
+    store = Store(conn)
+    sub = store.add_subscription("https://pg-migrate.example/f", fetch_interval=3600)
+    assert store.get_subscription(sub.id).fetch_interval == 3600
+    conn.close()
 
 
 def test_filter_parity_on_postgres(pg_store):

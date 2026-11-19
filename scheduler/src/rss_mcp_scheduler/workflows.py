@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from temporalio import workflow
@@ -16,6 +16,19 @@ _FEED_RETRY = RetryPolicy(
     maximum_interval=timedelta(hours=1),
     maximum_attempts=5,
 )
+
+
+def _within_interval(sub: dict[str, Any], now: datetime) -> bool:
+    interval = sub.get("fetch_interval")
+    last = sub.get("last_fetched_at")
+    # Failing feeds keep their retry cadence; the interval only gates healthy ones.
+    if not interval or not last or sub.get("last_error"):
+        return False
+    try:
+        last_dt = datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return now < last_dt + timedelta(seconds=interval)
 
 
 @workflow.defn
@@ -45,11 +58,16 @@ class RefreshAllWorkflow:
         )
         parent_id = workflow.info().workflow_id
         task_queue = workflow.info().task_queue
+        now = workflow.now()
         handles = []
         skipped_disabled = 0
+        skipped_interval = 0
         for sub in subs:
             if sub.get("disabled"):
                 skipped_disabled += 1
+                continue
+            if _within_interval(sub, now):
+                skipped_interval += 1
                 continue
             handle = await workflow.start_child_workflow(
                 RefreshFeedWorkflow.run,
@@ -76,4 +94,5 @@ class RefreshAllWorkflow:
             "ok": ok,
             "error": error,
             "skipped_disabled": skipped_disabled,
+            "skipped_interval": skipped_interval,
         }

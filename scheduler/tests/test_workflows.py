@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 import pytest_asyncio
 from temporalio import activity
@@ -47,7 +49,47 @@ async def test_refresh_all_fans_out_and_isolates_failures(env):
             id="test-refresh-all",
             task_queue=TASK_QUEUE,
         )
-    assert summary == {"total": 3, "ok": 1, "error": 1, "skipped_disabled": 1}
+    assert summary == {"total": 3, "ok": 1, "error": 1, "skipped_disabled": 1, "skipped_interval": 0}
+
+
+@activity.defn(name="list_subscriptions")
+async def fake_list_intervals() -> list[dict]:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return [
+        {"id": 1, "url": "https://normal.xml", "disabled": False},
+        {"id": 4, "url": "https://weekly.xml", "disabled": False,
+         "fetch_interval": 604800, "last_fetched_at": now},
+        {"id": 5, "url": "https://weekly-bad.xml", "disabled": False,
+         "fetch_interval": 604800, "last_fetched_at": now, "last_error": "HTTP 502"},
+        {"id": 6, "url": "https://weekly-old.xml", "disabled": False,
+         "fetch_interval": 604800, "last_fetched_at": "2026-11-01T00:00:00Z"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_refresh_all_skips_feeds_within_interval(env):
+    fetched: list[int] = []
+
+    @activity.defn(name="fetch_feed")
+    async def recording_fetch(subscription_id: int) -> dict:
+        fetched.append(subscription_id)
+        return {"subscription_id": subscription_id, "status": "ok", "upserted": 0}
+
+    async with Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[RefreshAllWorkflow, RefreshFeedWorkflow],
+        activities=[fake_list_intervals, recording_fetch],
+    ):
+        summary = await env.client.execute_workflow(
+            RefreshAllWorkflow.run,
+            id="test-refresh-intervals",
+            task_queue=TASK_QUEUE,
+        )
+
+    assert summary["skipped_interval"] == 1
+    assert 4 not in fetched, "healthy feed inside its interval was fetched"
+    assert {1, 5, 6} <= set(fetched), "normal/failing/expired feeds must still fetch"
 
 
 @pytest.mark.asyncio

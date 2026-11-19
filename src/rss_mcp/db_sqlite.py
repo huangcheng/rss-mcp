@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     disabled INTEGER NOT NULL DEFAULT 0,
     muted INTEGER NOT NULL DEFAULT 0,
     include_keywords TEXT,
-    exclude_keywords TEXT
+    exclude_keywords TEXT,
+    fetch_interval INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS entries (
@@ -110,5 +111,10 @@ MIGRATIONS = (
         "entries",
         "filtered",
         "ALTER TABLE entries ADD COLUMN filtered INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "subscriptions",
+        "fetch_interval",
+        "ALTER TABLE subscriptions ADD COLUMN fetch_interval INTEGER",
     ),
 )

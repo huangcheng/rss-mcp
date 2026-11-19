@@ -44,6 +44,7 @@ def test_init_db_creates_tables(tmp_path: Path) -> None:
         "muted",
         "include_keywords",
         "exclude_keywords",
+        "fetch_interval",
     ]
     assert columns("entries") == [
         "id",
@@ -184,6 +185,7 @@ def test_init_db_migrates_0_1_schema(tmp_path: Path) -> None:
         "muted",
         "include_keywords",
         "exclude_keywords",
+        "fetch_interval",
     } <= sub_columns
     assert {"enclosures", "canonical_url", "duplicate_of", "filtered"} <= entry_columns
     row = migrated.execute(

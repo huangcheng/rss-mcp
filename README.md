@@ -137,11 +137,11 @@ Both engines implement the same behavior: subscriptions, entries, read/star stat
 
 ## Tools
 
-- `add_subscription` — Add a feed by URL with optional tags, per-feed `user_agent`/`headers`, keyword filters, and `muted`. Repeating a URL returns the existing subscription.
-- `update_subscription` — Edit title/tags/user_agent/headers/disabled/muted/filters. Omitted fields are unchanged; empty string/dict/list clears; `disabled=false` re-enables and resets failures; keyword rule changes re-apply to cached entries.
+- `add_subscription` — Add a feed by URL with optional tags, per-feed `user_agent`/`headers`, keyword filters, `muted`, and `fetch_interval` (minimum seconds between refreshes). Repeating a URL returns the existing subscription.
+- `update_subscription` — Edit title/tags/user_agent/headers/disabled/muted/filters/fetch_interval. Omitted fields are unchanged; empty string/dict/list clears; `disabled=false` re-enables and resets failures; keyword rule changes re-apply to cached entries; `fetch_interval` (seconds) sets a per-feed minimum between refreshes, `0` clears it.
 - `remove_subscription` — Delete a subscription and its cached entries.
 - `list_subscriptions` — List subscriptions with unread counts and fetch health, optionally filtered by `tag`. `failing_only=true` returns errored/auto-disabled feeds, each with a `remediation` hint (retry, set a browser `user_agent`, or remove + re-add).
-- `fetch_feed` — Fetch one subscription, or every subscription concurrently when the id is omitted (disabled/backing-off feeds are skipped in bulk; fetching by id re-enables).
+- `fetch_feed` — Fetch one subscription, or every subscription concurrently when the id is omitted (disabled/backing-off/inside-`fetch_interval` feeds are skipped in bulk; fetching by id re-enables and bypasses the gates).
 - `list_entries` — List cached entries (article bodies omitted). Cross-feed duplicates and keyword-filtered entries are hidden; muted subscriptions drop out of aggregate views (explicit `subscription_id` keeps them). Filter by `tag` or `starred`; `since` accepts ISO 8601. Limit falls back to the server default and is clamped.
 - `read_entry` — Return one entry with full content and enclosures. `fetch_full` replaces content only when article text is returned. `mark_read` marks it read.
 - `search_entries` — Full-text search over cached title, summary, and content, bm25-ranked with a plain-text match `snippet` (bodies omitted; use `read_entry` for full text). Filter by `tag` or `since` (ISO 8601). Duplicates, filtered entries, and muted feeds are excluded exactly like `list_entries`.

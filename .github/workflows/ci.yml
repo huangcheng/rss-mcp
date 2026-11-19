@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -58,3 +58,15 @@ jobs:
       - run: uv run pytest tests/test_postgres.py
         env:
           RSS_MCP_TEST_PG_URL: postgresql://postgres:test@localhost:5432/rss_test
+
+  uvx-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv build
+      - run: uv run python scripts/uvx_stdio_smoke.py dist/rss_mcp_server-*.whl
