@@ -19,7 +19,8 @@ _FEED_RETRY = RetryPolicy(
 
 
 def _within_interval(sub: dict[str, Any], now: datetime) -> bool:
-    interval = sub.get("fetch_interval")
+    ttl = sub.get("ttl")
+    interval = sub.get("fetch_interval") or (ttl * 60 if ttl else None)
     last = sub.get("last_fetched_at")
     # Failing feeds keep their retry cadence; the interval only gates healthy ones.
     if not interval or not last or sub.get("last_error"):
@@ -29,6 +30,17 @@ def _within_interval(sub: dict[str, Any], now: datetime) -> bool:
     except ValueError:
         return False
     return now < last_dt + timedelta(seconds=interval)
+
+
+_DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def _in_skip_hint(sub: dict[str, Any], now: datetime) -> bool:
+    # RSS 2.0 skipHours/skipDays are GMT hints; workflow.now() is UTC.
+    # Weekday via index: locale-independent and replay-deterministic.
+    if now.hour in (sub.get("skip_hours") or []):
+        return True
+    return _DAY_NAMES[now.weekday()] in (sub.get("skip_days") or [])
 
 
 @workflow.defn
@@ -62,12 +74,16 @@ class RefreshAllWorkflow:
         handles = []
         skipped_disabled = 0
         skipped_interval = 0
+        skipped_hint = 0
         for sub in subs:
             if sub.get("disabled"):
                 skipped_disabled += 1
                 continue
             if _within_interval(sub, now):
                 skipped_interval += 1
+                continue
+            if _in_skip_hint(sub, now):
+                skipped_hint += 1
                 continue
             handle = await workflow.start_child_workflow(
                 RefreshFeedWorkflow.run,
@@ -95,4 +111,5 @@ class RefreshAllWorkflow:
             "error": error,
             "skipped_disabled": skipped_disabled,
             "skipped_interval": skipped_interval,
+            "skipped_hint": skipped_hint,
         }

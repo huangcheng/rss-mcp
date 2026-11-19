@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import io
-from dataclasses import dataclass
+import re
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Literal
@@ -15,6 +17,16 @@ from rss_mcp.models import EntryInput
 
 MAX_FEED_BYTES = 5 * 1024 * 1024
 _READ_CHUNK = 64 * 1024
+_WEEKDAYS = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
+# ttl is stored in a 32-bit INTEGER column and consumed as ttl*60 seconds;
+# keep both inside the bounds enforced for fetch_interval.
+_MAX_TTL_MINUTES = 2_147_483_647 // 60
+_DOCTYPE = re.compile(rb"<!doctype", re.IGNORECASE)
+
+
+def _is_http_url(url: str | None) -> bool:
+    # URI schemes are case-insensitive (RFC 3986); compare lowered, store as-is.
+    return bool(url) and url.lower().startswith(("http://", "https://"))
 
 
 @dataclass
@@ -25,6 +37,9 @@ class FetchResult:
     last_modified: str | None
     feed_title: str | None
     error: str | None
+    ttl: int | None = None
+    skip_hours: list[int] = field(default_factory=list)
+    skip_days: list[str] = field(default_factory=list)
 
 
 def _text(value: object) -> str | None:
@@ -89,7 +104,9 @@ def _enclosures(entry: feedparser.FeedParserDict, base_url: str) -> list[dict]:
         if not isinstance(raw, dict):
             continue
         url = _resolve_url(raw.get("href") or raw.get("url"), base_url)
-        if not url or url in seen:
+        # RSS 2.0: enclosure url must be an http url (https accepted as its
+        # modern equivalent); other schemes are not fetchable media.
+        if not _is_http_url(url) or url in seen:
             continue
         seen.add(url)
         item: dict = {"url": url}
@@ -104,9 +121,17 @@ def _enclosures(entry: feedparser.FeedParserDict, base_url: str) -> list[dict]:
 
 
 def _entry(entry: feedparser.FeedParserDict, base_url: str) -> EntryInput:
+    url = _resolve_url(entry.get("link"), base_url)
+    if not _is_http_url(url):
+        url = None
+    if url is None and entry.get("guidislink"):
+        # RSS 2.0: guid with isPermaLink=true (the default) is a permalink.
+        guid_url = _resolve_url(entry.get("id"), base_url)
+        if _is_http_url(guid_url):
+            url = guid_url
     return EntryInput(
         guid=_text(entry.get("id")),
-        url=_resolve_url(entry.get("link"), base_url),
+        url=url,
         title=_text(entry.get("title")),
         author=_text(entry.get("author")),
         published_at=_published_at(entry),
@@ -114,6 +139,47 @@ def _entry(entry: feedparser.FeedParserDict, base_url: str) -> EntryInput:
         content=_content(entry),
         enclosures=_enclosures(entry, base_url),
     )
+
+
+def _feed_hints(body: bytes) -> tuple[int | None, list[int], list[str]]:
+    """RSS 2.0 channel hints: ttl (minutes), skipHours (0-23 GMT), skipDays.
+
+    Parsed directly: feedparser flattens skipHours/skipDays sub-elements and
+    loses the lists. RSS core elements are unnamespaced; Atom has no hints.
+    Bodies with a DTD are skipped: hints never need one, and ET expands
+    internal entities (billion-laughs amplification).
+    """
+    if _DOCTYPE.search(body):
+        return None, [], []
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return None, [], []
+    channel = root.find("channel")
+    if channel is None:
+        return None, [], []
+    ttl: int | None = None
+    raw_ttl = (channel.findtext("ttl") or "").strip()
+    if raw_ttl:
+        try:
+            parsed_ttl = int(raw_ttl)
+            ttl = parsed_ttl if 0 < parsed_ttl <= _MAX_TTL_MINUTES else None
+        except ValueError:
+            ttl = None
+    hours: list[int] = []
+    for hour_el in channel.findall("skipHours/hour"):
+        try:
+            hour = int((hour_el.text or "").strip())
+        except ValueError:
+            continue
+        if 0 <= hour <= 23 and hour not in hours:
+            hours.append(hour)
+    days: list[str] = []
+    for day_el in channel.findall("skipDays/day"):
+        day = (day_el.text or "").strip().title()
+        if day in _WEEKDAYS and day not in days:
+            days.append(day)
+    return ttl, hours, days
 
 
 def _cap(entries: list[EntryInput], entry_cap: int) -> list[EntryInput]:
@@ -129,6 +195,7 @@ def _from_parsed(
     etag: str | None,
     last_modified: str | None,
     entry_cap: int,
+    hints: tuple[int | None, list[int], list[str]],
 ) -> FetchResult:
     version = parsed.get("version") or ""
     if not isinstance(version, str):
@@ -138,6 +205,7 @@ def _from_parsed(
         exc = parsed.get("bozo_exception")
         detail = str(exc).strip() if exc else "unrecognized feed"
         return _error(f"unable to parse feed: {detail}")
+    ttl, skip_hours, skip_days = hints
     return FetchResult(
         status="ok",
         entries=_cap(
@@ -148,6 +216,9 @@ def _from_parsed(
         last_modified=last_modified,
         feed_title=_text(parsed.feed.get("title")),
         error=None,
+        ttl=ttl,
+        skip_hours=skip_hours,
+        skip_days=skip_days,
     )
 
 
@@ -211,7 +282,13 @@ async def fetch_feed(
         return _error(f"response exceeds {MAX_FEED_BYTES} bytes")
     try:
         # BytesIO: feedparser.parse(bytes) opens a body that is an existing path.
-        parsed = await asyncio.to_thread(feedparser.parse, io.BytesIO(body))
+        def _parse_all() -> tuple[feedparser.FeedParserDict, tuple[int | None, list[int], list[str]]]:
+            parsed = feedparser.parse(io.BytesIO(body))
+            version = parsed.get("version") or ""
+            hints = _feed_hints(body) if version.startswith("rss") else (None, [], [])
+            return parsed, hints
+
+        parsed, hints = await asyncio.to_thread(_parse_all)
     except Exception as exc:
         return _error(f"unable to parse feed: {exc}")
     return _from_parsed(
@@ -220,6 +297,7 @@ async def fetch_feed(
         etag=response_etag,
         last_modified=response_modified,
         entry_cap=entry_cap,
+        hints=hints,
     )
 
 

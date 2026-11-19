@@ -24,7 +24,10 @@ _PG_SCHEMA = (
         muted INTEGER NOT NULL DEFAULT 0,
         include_keywords TEXT,
         exclude_keywords TEXT,
-        fetch_interval INTEGER
+        fetch_interval INTEGER,
+        ttl INTEGER,
+        skip_hours TEXT,
+        skip_days TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS entries (
         id SERIAL PRIMARY KEY,
@@ -63,6 +66,9 @@ _PG_MIGRATIONS = (
     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS exclude_keywords TEXT",
     "ALTER TABLE entries ADD COLUMN IF NOT EXISTS filtered INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS fetch_interval INTEGER",
+    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ttl INTEGER",
+    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS skip_hours TEXT",
+    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS skip_days TEXT",
 )
 
 _CANONICAL_INDEX_DDL = "CREATE INDEX IF NOT EXISTS entries_canonical_idx ON entries(canonical_url)"

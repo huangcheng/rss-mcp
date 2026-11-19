@@ -85,6 +85,7 @@ The HTTP app also serves an unauthenticated `GET /healthz` (JSON: status, versio
 - **Per-feed overrides**: `add_subscription` / `update_subscription` accept `user_agent` and `headers` for feeds that block the default client.
 - **Keyword filters**: `include_keywords` / `exclude_keywords` per subscription hide entries whose title or summary misses (or hits) a keyword — case-insensitive substring. Filtered entries are stored but flagged, hidden from listing, search, unread counts, and the unread resource. Rule edits re-apply to cached entries, so filtering is retroactive and reversible.
 - **Mute**: `muted=true` keeps a feed fetched but hides it from aggregate views (listings/search without a `subscription_id`, unread counts). Explicit `subscription_id` queries still return its entries.
+- **RSS 2.0 spec hints**: the feed's `ttl` (minutes) acts as its default refresh interval (an explicit `fetch_interval` overrides it), and `skipHours`/`skipDays` (GMT) pause bulk refreshes during the declared windows — honored by both the built-in loop and the Temporal scheduler. Items without a link fall back to a permalink `guid`; enclosure URLs must be http(s). Conditional requests (ETag/Last-Modified → 304) complement these hints at the HTTP layer.
 
 ## Live notifications
 
@@ -141,7 +142,7 @@ Both engines implement the same behavior: subscriptions, entries, read/star stat
 - `update_subscription` — Edit title/tags/user_agent/headers/disabled/muted/filters/fetch_interval. Omitted fields are unchanged; empty string/dict/list clears; `disabled=false` re-enables and resets failures; keyword rule changes re-apply to cached entries; `fetch_interval` (seconds) sets a per-feed minimum between refreshes, `0` clears it.
 - `remove_subscription` — Delete a subscription and its cached entries.
 - `list_subscriptions` — List subscriptions with unread counts and fetch health, optionally filtered by `tag`. `failing_only=true` returns errored/auto-disabled feeds, each with a `remediation` hint (retry, set a browser `user_agent`, or remove + re-add).
-- `fetch_feed` — Fetch one subscription, or every subscription concurrently when the id is omitted (disabled/backing-off/inside-`fetch_interval` feeds are skipped in bulk; fetching by id re-enables and bypasses the gates).
+- `fetch_feed` — Fetch one subscription, or every subscription concurrently when the id is omitted (disabled, backing-off, inside-`fetch_interval`/RSS-`ttl`, or in RSS `skipHours`/`skipDays` windows are skipped in bulk; fetching by id re-enables and bypasses the gates).
 - `list_entries` — List cached entries (article bodies omitted). Cross-feed duplicates and keyword-filtered entries are hidden; muted subscriptions drop out of aggregate views (explicit `subscription_id` keeps them). Filter by `tag` or `starred`; `since` accepts ISO 8601. Limit falls back to the server default and is clamped.
 - `read_entry` — Return one entry with full content and enclosures. `fetch_full` replaces content only when article text is returned. `mark_read` marks it read.
 - `search_entries` — Full-text search over cached title, summary, and content, bm25-ranked with a plain-text match `snippet` (bodies omitted; use `read_entry` for full text). Filter by `tag` or `since` (ISO 8601). Duplicates, filtered entries, and muted feeds are excluded exactly like `list_entries`.

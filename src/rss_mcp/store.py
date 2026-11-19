@@ -53,6 +53,9 @@ SELECT
     s.include_keywords,
     s.exclude_keywords,
     s.fetch_interval,
+    s.ttl,
+    s.skip_hours,
+    s.skip_days,
     (
         SELECT COUNT(*)
         FROM entries AS e
@@ -171,6 +174,9 @@ def _subscription_from_row(row: Any) -> Subscription:
         include_keywords=_tags_from_column(row["include_keywords"]),
         exclude_keywords=_tags_from_column(row["exclude_keywords"]),
         fetch_interval=row["fetch_interval"],
+        ttl=row["ttl"],
+        skip_hours=json.loads(row["skip_hours"]) if row["skip_hours"] else [],
+        skip_days=_tags_from_column(row["skip_days"]),
     )
 
 
@@ -423,6 +429,23 @@ class Store:
                SET etag = ?, last_modified = ?, last_fetched_at = ?, last_error = ?
                WHERE id = ?""",
             (etag, last_modified, last_fetched_at, last_error, subscription_id),
+        )
+        self._conn.commit()
+
+    def update_feed_hints(
+        self,
+        subscription_id: int,
+        *,
+        ttl: int | None,
+        skip_hours: list[int],
+        skip_days: list[str],
+    ) -> None:
+        # Called only on a parsed 200; a 304 keeps the previously stored hints.
+        self._conn.execute(
+            """UPDATE subscriptions
+               SET ttl = ?, skip_hours = ?, skip_days = ?
+               WHERE id = ?""",
+            (ttl, json.dumps(skip_hours), json.dumps(skip_days), subscription_id),
         )
         self._conn.commit()
 

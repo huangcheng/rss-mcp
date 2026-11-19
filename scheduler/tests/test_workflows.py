@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -49,7 +49,8 @@ async def test_refresh_all_fans_out_and_isolates_failures(env):
             id="test-refresh-all",
             task_queue=TASK_QUEUE,
         )
-    assert summary == {"total": 3, "ok": 1, "error": 1, "skipped_disabled": 1, "skipped_interval": 0}
+    assert summary == {"total": 3, "ok": 1, "error": 1, "skipped_disabled": 1,
+                       "skipped_interval": 0, "skipped_hint": 0}
 
 
 @activity.defn(name="list_subscriptions")
@@ -90,6 +91,52 @@ async def test_refresh_all_skips_feeds_within_interval(env):
     assert summary["skipped_interval"] == 1
     assert 4 not in fetched, "healthy feed inside its interval was fetched"
     assert {1, 5, 6} <= set(fetched), "normal/failing/expired feeds must still fetch"
+
+
+@pytest.mark.asyncio
+async def test_refresh_all_honors_ttl_and_skip_hints(env):
+    import calendar
+
+    now = datetime.now(timezone.utc)
+    fetched: list[int] = []
+
+    @activity.defn(name="list_subscriptions")
+    async def fake_list_hints() -> list[dict]:
+        stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        earlier = (now - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return [
+            {"id": 1, "url": "https://normal.xml", "disabled": False},
+            {"id": 7, "url": "https://ttl.xml", "disabled": False,
+             "ttl": 60, "last_fetched_at": stamp},
+            {"id": 8, "url": "https://skip.xml", "disabled": False,
+             "skip_hours": [now.hour, (now.hour + 1) % 24]},
+            {"id": 9, "url": "https://skipday.xml", "disabled": False,
+             "skip_days": [calendar.day_name[now.weekday()],
+                           calendar.day_name[(now.weekday() + 1) % 7]]},
+            {"id": 10, "url": "https://override.xml", "disabled": False,
+             "fetch_interval": 1, "ttl": 60, "last_fetched_at": earlier},
+        ]
+
+    @activity.defn(name="fetch_feed")
+    async def recording_fetch(subscription_id: int) -> dict:
+        fetched.append(subscription_id)
+        return {"subscription_id": subscription_id, "status": "ok", "upserted": 0}
+
+    async with Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[RefreshAllWorkflow, RefreshFeedWorkflow],
+        activities=[fake_list_hints, recording_fetch],
+    ):
+        summary = await env.client.execute_workflow(
+            RefreshAllWorkflow.run,
+            id="test-refresh-hints",
+            task_queue=TASK_QUEUE,
+        )
+
+    assert summary["skipped_interval"] == 1, "ttl must gate like an interval"
+    assert summary["skipped_hint"] == 2
+    assert set(fetched) == {1, 10}, "explicit fetch_interval must win over ttl"
 
 
 @pytest.mark.asyncio

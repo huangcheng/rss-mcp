@@ -145,12 +145,28 @@ def _in_backoff(sub: Subscription, now: datetime) -> bool:
 
 
 def _in_interval(sub: Subscription, now: datetime) -> bool:
-    if not sub.fetch_interval:
+    # Explicit fetch_interval wins; otherwise honor the feed's RSS ttl (minutes).
+    # Failing feeds keep the backoff cadence (mirrors the scheduler policy).
+    if sub.last_error:
+        return False
+    interval = sub.fetch_interval or (sub.ttl * 60 if sub.ttl else None)
+    if not interval:
         return False
     last = _last_fetched(sub)
     if last is None:
         return False
-    return now < last + timedelta(seconds=sub.fetch_interval)
+    return now < last + timedelta(seconds=interval)
+
+
+_DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def _in_skip_window(sub: Subscription, now: datetime) -> bool:
+    # RSS 2.0 skipHours/skipDays are GMT hints; now is UTC. Weekday via index,
+    # not strftime("%A"), which is locale-dependent.
+    if now.hour in sub.skip_hours:
+        return True
+    return _DAY_NAMES[now.weekday()] in sub.skip_days
 
 
 def _prune(app: _App) -> int:
@@ -213,6 +229,13 @@ async def _refresh(app: _App, sub: Subscription) -> dict[str, Any]:
         last_fetched_at=_utc_now(),
         last_error=None,
     )
+    if (result.ttl, result.skip_hours, result.skip_days) != (sub.ttl, sub.skip_hours, sub.skip_days):
+        app.store.update_feed_hints(
+            sub.id,
+            ttl=result.ttl,
+            skip_hours=result.skip_hours,
+            skip_days=result.skip_days,
+        )
     feed_title = (result.feed_title or "").strip()
     if feed_title and not (sub.title or "").strip():
         app.store.set_title_if_empty(sub.id, feed_title)
@@ -252,6 +275,8 @@ async def _refresh_all(app: _App) -> dict[str, Any]:
                 results[sub.id] = _skipped(sub, "backoff")
             elif _in_interval(sub, now):
                 results[sub.id] = _skipped(sub, "interval")
+            elif _in_skip_window(sub, now):
+                results[sub.id] = _skipped(sub, "skip_hint")
             else:
                 tg.start_soon(worker, sub)
     summary = _summary([results[sub.id] for sub in subs])
@@ -529,7 +554,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         fetch_interval: int | None = None,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """Add a feed by URL. Repeating a URL returns the existing subscription. Optional per-feed user_agent/headers override the defaults. include_keywords/exclude_keywords hide entries whose title or summary does not match (or does match, case-insensitive substring); muted keeps the feed fetched but hides it from aggregate views. fetch_interval (seconds, max 2147483647) overrides the global refresh cadence for this feed; 0 follows the global cadence."""
+        """Add a feed by URL. Repeating a URL returns the existing subscription. Optional per-feed user_agent/headers override the defaults. include_keywords/exclude_keywords hide entries whose title or summary does not match (or does match, case-insensitive substring); muted keeps the feed fetched but hides it from aggregate views. fetch_interval (seconds, max 2147483647) sets a per-feed minimum between refreshes; when unset or 0 the feed's RSS ttl applies, else the global cadence."""
         app = _app(ctx)
         _validate_fetch_interval(fetch_interval)
         sub = app.store.add_subscription(
@@ -560,7 +585,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         fetch_interval: int | None = None,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """Edit a subscription. Omitted fields are unchanged; empty string/dict/list clears a field. disabled=False re-enables and resets the failure count. Changing keyword rules re-applies them to already cached entries. fetch_interval sets a per-feed minimum seconds between refreshes (max 2147483647); 0 clears it (follow the global cadence)."""
+        """Edit a subscription. Omitted fields are unchanged; empty string/dict/list clears a field. disabled=False re-enables and resets the failure count. Changing keyword rules re-applies them to already cached entries. fetch_interval sets a per-feed minimum seconds between refreshes (max 2147483647); 0 clears it, leaving the feed's RSS ttl or the global cadence in effect."""
         app = _app(ctx)
         _validate_fetch_interval(fetch_interval)
         if app.store.get_subscription(subscription_id) is None:
@@ -612,7 +637,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
 
     @server.tool()
     async def fetch_feed(subscription_id: int | None = None, *, ctx: Context) -> dict[str, Any]:
-        """Fetch one subscription, or every subscription concurrently when the id is omitted. Disabled feeds, feeds in failure backoff, and feeds inside their per-feed fetch_interval are skipped in bulk mode; fetching one by id re-enables it and bypasses the gates."""
+        """Fetch one subscription, or every subscription concurrently when the id is omitted. Disabled feeds, feeds in failure backoff, feeds inside their fetch_interval or RSS ttl, and feeds in their RSS skipHours/skipDays window are skipped in bulk mode; fetching one by id re-enables it and bypasses the gates."""
         app = _app(ctx)
         if subscription_id is None:
             return await _refresh_all(app)

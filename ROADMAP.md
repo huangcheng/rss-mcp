@@ -29,6 +29,10 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 - **CI uvx stdio smoke test**: builds the wheel, installs via uvx, runs a full MCP session against a local fixture feed — the host install path is now guarded on every push.
 - **CI matrix extended to Python 3.14/3.15**; dependabot weekly for uv (root + scheduler) and GitHub Actions.
 
+## 0.3.3 — released 2026-11-19
+
+- **RSS 2.0 spec alignment** (rssboard.org/rss-specification): guid `isPermaLink` fallback when an item has no link; enclosure URLs restricted to http(s) per spec; channel `ttl` honored as the default refresh interval (explicit `fetch_interval` wins); `skipHours`/`skipDays` GMT hints gate bulk refreshes on both the server and the Temporal scheduler (manual fetch by id still bypasses). Hints are parsed directly from XML because feedparser flattens the skip lists; stored per subscription and preserved across 304s.
+
 ## 0.5.x — robustness and observability
 
 - Prometheus `/metrics` (fetch latency, failure rates, queue depth).

@@ -300,6 +300,38 @@ def test_fetch_interval_roundtrip_on_postgres(pg_store):
     assert pg_store.get_subscription(sub.id).fetch_interval is None
 
 
+def test_feed_hints_roundtrip_on_postgres(pg_store):
+    sub = pg_store.add_subscription("https://pg-hints.example/f")
+    pg_store.update_feed_hints(sub.id, ttl=45, skip_hours=[2, 3], skip_days=["Sunday"])
+    stored = pg_store.get_subscription(sub.id)
+    assert stored.ttl == 45
+    assert stored.skip_hours == [2, 3]
+    assert stored.skip_days == ["Sunday"]
+    pg_store.update_feed_hints(sub.id, ttl=None, skip_hours=[], skip_days=[])
+    stored = pg_store.get_subscription(sub.id)
+    assert stored.ttl is None
+    assert stored.skip_hours == []
+    assert stored.skip_days == []
+
+
+def test_pg_migration_restores_feed_hints(pg_url):
+    settings = _settings(pg_url)
+    conn = connect_db(settings)
+    init_db(conn)
+    for column in ("ttl", "skip_hours", "skip_days"):
+        conn.execute(f"ALTER TABLE subscriptions DROP COLUMN IF EXISTS {column}")
+    conn.commit()
+    init_db(conn)
+    store = Store(conn)
+    sub = store.add_subscription("https://pg-hints-migrate.example/f")
+    store.update_feed_hints(sub.id, ttl=30, skip_hours=[1], skip_days=["Tuesday"])
+    stored = store.get_subscription(sub.id)
+    assert stored.ttl == 30
+    assert stored.skip_hours == [1]
+    assert stored.skip_days == ["Tuesday"]
+    conn.close()
+
+
 def test_pg_migration_restores_fetch_interval(pg_url):
     # Simulate a pre-0.3.2 database: drop the column, re-init must restore it.
     settings = _settings(pg_url)

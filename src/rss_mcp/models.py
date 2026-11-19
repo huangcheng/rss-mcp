@@ -23,6 +23,9 @@ class Subscription:
     include_keywords: list[str] = field(default_factory=list)
     exclude_keywords: list[str] = field(default_factory=list)
     fetch_interval: int | None = None
+    ttl: int | None = None
+    skip_hours: list[int] = field(default_factory=list)
+    skip_days: list[str] = field(default_factory=list)
 
 
 @dataclass

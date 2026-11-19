@@ -18,7 +18,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     muted INTEGER NOT NULL DEFAULT 0,
     include_keywords TEXT,
     exclude_keywords TEXT,
-    fetch_interval INTEGER
+    fetch_interval INTEGER,
+    ttl INTEGER,
+    skip_hours TEXT,
+    skip_days TEXT
 );
 
 CREATE TABLE IF NOT EXISTS entries (
@@ -117,4 +120,7 @@ MIGRATIONS = (
         "fetch_interval",
         "ALTER TABLE subscriptions ADD COLUMN fetch_interval INTEGER",
     ),
+    ("subscriptions", "ttl", "ALTER TABLE subscriptions ADD COLUMN ttl INTEGER"),
+    ("subscriptions", "skip_hours", "ALTER TABLE subscriptions ADD COLUMN skip_hours TEXT"),
+    ("subscriptions", "skip_days", "ALTER TABLE subscriptions ADD COLUMN skip_days TEXT"),
 )
