@@ -6,6 +6,18 @@ Protocol: [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07
 
 Requires Python 3.11+. Install from [PyPI](https://pypi.org/project/rss-mcp-server/): `uv tool install rss-mcp-server` gives you the `rss-mcp` and `rss-mcp-server` commands, or run it once with `uvx rss-mcp-server`.
 
+## Documentation
+
+Full docs live in [`docs/`](docs/):
+
+- [Tool reference](docs/tools.md) — every parameter and response field
+- [Deployment](docs/deployment.md) — stdio, Docker, PostgreSQL, Temporal, backups
+- [Observability](docs/observability.md) — logs, traces, `/metrics`, `server_status`
+- [Stability policy](docs/stability.md) — what 1.0 freezes and how changes are deprecated
+
+The frozen 1.0 surface is machine-readable in [`docs/freeze-manifest.json`](docs/freeze-manifest.json)
+and enforced by `tests/test_freeze_manifest.py`.
+
 ## Host config
 
 In stdio mode, the process reads JSON-RPC from stdin and writes MCP messages only to stdout. It exits when stdin closes.

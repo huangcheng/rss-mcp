@@ -59,11 +59,20 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 
 - `curl_cffi` (TLS impersonation) stays deferred. 2026-11-20: the live library had 0 failing and 0 empty feeds, and 24h of JSON logs contained no 403/429. Revisit only when a feed you want to keep fails with 403/429 plus a Cloudflare challenge; deleting the feed is still the cheaper answer.
 
-## 1.0.0 — stability commitment
+## 1.0.0 — stability commitment (drafted 2026-11-20, soak started)
 
-- Frozen tool signatures and response shapes; breaking changes go through a deprecation cycle.
-- Full documentation site.
-- Tracking mechanism for new MCP protocol revisions.
+Drafted and implemented ahead of the release, so the contract is enforced from
+now on rather than written after the fact:
+
+- `docs/freeze-manifest.json` lists the 15 tool schemas, 2 resource URIs, 1 prompt,
+  CLI subcommands/flags, every `RSS_MCP_*` env var and every metric family.
+  `tests/test_freeze_manifest.py` compares it against the running server, the parsed
+  CLI, the env vars the source reads and an actual scrape — silent drift fails CI.
+- `docs/stability.md` defines the breaking-change set, the two-release deprecation
+  window, and the soak gate (14 days without a frozen-surface change, `warnings = 0`,
+  two successful backup drills, at least one real digest day).
+- `docs/` covers tools, deployment and observability; `docs/README.md` is the index.
+- Remaining: MCP protocol revision tracking (currently follows the SDK).
 
 ## Not planned
 

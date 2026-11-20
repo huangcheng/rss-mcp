@@ -1,0 +1,768 @@
+{
+  "format": 1,
+  "status": "candidate-freeze",
+  "freeze_target": "1.0.0",
+  "soak_started": "2026-11-20",
+  "policy": "docs/stability.md",
+  "mcp": {
+    "tools": [
+      {
+        "name": "add_subscription",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "title": "Url",
+              "type": "string"
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Title"
+            },
+            "tags": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tags"
+            },
+            "user_agent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "User Agent"
+            },
+            "headers": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Headers"
+            },
+            "muted": {
+              "default": false,
+              "title": "Muted",
+              "type": "boolean"
+            },
+            "include_keywords": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Include Keywords"
+            },
+            "exclude_keywords": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Exclude Keywords"
+            },
+            "fetch_interval": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fetch Interval"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "title": "add_subscriptionArguments"
+        }
+      },
+      {
+        "name": "update_subscription",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "subscription_id": {
+              "title": "Subscription Id",
+              "type": "integer"
+            },
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Title"
+            },
+            "tags": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tags"
+            },
+            "user_agent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "User Agent"
+            },
+            "headers": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Headers"
+            },
+            "disabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Disabled"
+            },
+            "muted": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Muted"
+            },
+            "include_keywords": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Include Keywords"
+            },
+            "exclude_keywords": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Exclude Keywords"
+            },
+            "fetch_interval": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fetch Interval"
+            }
+          },
+          "required": [
+            "subscription_id"
+          ],
+          "title": "update_subscriptionArguments"
+        }
+      },
+      {
+        "name": "remove_subscription",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "subscription_id": {
+              "title": "Subscription Id",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "subscription_id"
+          ],
+          "title": "remove_subscriptionArguments"
+        }
+      },
+      {
+        "name": "list_subscriptions",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "tag": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tag"
+            },
+            "failing_only": {
+              "default": false,
+              "title": "Failing Only",
+              "type": "boolean"
+            }
+          },
+          "title": "list_subscriptionsArguments"
+        }
+      },
+      {
+        "name": "server_status",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "title": "server_statusArguments"
+        }
+      },
+      {
+        "name": "fetch_feed",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "subscription_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Subscription Id"
+            }
+          },
+          "title": "fetch_feedArguments"
+        }
+      },
+      {
+        "name": "list_entries",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "subscription_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Subscription Id"
+            },
+            "unread_only": {
+              "default": false,
+              "title": "Unread Only",
+              "type": "boolean"
+            },
+            "limit": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Limit"
+            },
+            "since": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Since"
+            },
+            "include_duplicates": {
+              "default": false,
+              "title": "Include Duplicates",
+              "type": "boolean"
+            },
+            "tag": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tag"
+            },
+            "starred": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starred"
+            }
+          },
+          "title": "list_entriesArguments"
+        }
+      },
+      {
+        "name": "read_entry",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "entry_id": {
+              "title": "Entry Id",
+              "type": "integer"
+            },
+            "fetch_full": {
+              "default": false,
+              "title": "Fetch Full",
+              "type": "boolean"
+            },
+            "mark_read": {
+              "default": false,
+              "title": "Mark Read",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "entry_id"
+          ],
+          "title": "read_entryArguments"
+        }
+      },
+      {
+        "name": "search_entries",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "title": "Query",
+              "type": "string"
+            },
+            "subscription_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Subscription Id"
+            },
+            "unread_only": {
+              "default": false,
+              "title": "Unread Only",
+              "type": "boolean"
+            },
+            "limit": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Limit"
+            },
+            "include_duplicates": {
+              "default": false,
+              "title": "Include Duplicates",
+              "type": "boolean"
+            },
+            "tag": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tag"
+            },
+            "since": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Since"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "title": "search_entriesArguments"
+        }
+      },
+      {
+        "name": "get_digest",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "since": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Since"
+            },
+            "tag": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tag"
+            },
+            "max_entries": {
+              "default": 50,
+              "title": "Max Entries",
+              "type": "integer"
+            },
+            "per_feed": {
+              "default": 3,
+              "title": "Per Feed",
+              "type": "integer"
+            },
+            "include_delivered": {
+              "default": false,
+              "title": "Include Delivered",
+              "type": "boolean"
+            },
+            "replay_days": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Replay Days"
+            },
+            "mark_read": {
+              "default": false,
+              "title": "Mark Read",
+              "type": "boolean"
+            }
+          },
+          "title": "get_digestArguments"
+        }
+      },
+      {
+        "name": "mark_entry",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "entry_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Entry Ids"
+            },
+            "subscription_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Subscription Id"
+            },
+            "read": {
+              "default": true,
+              "title": "Read",
+              "type": "boolean"
+            },
+            "tag": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Tag"
+            },
+            "before": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Before"
+            },
+            "all": {
+              "default": false,
+              "title": "All",
+              "type": "boolean"
+            }
+          },
+          "title": "mark_entryArguments"
+        }
+      },
+      {
+        "name": "star_entry",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "entry_ids": {
+              "items": {
+                "type": "integer"
+              },
+              "title": "Entry Ids",
+              "type": "array"
+            },
+            "starred": {
+              "default": true,
+              "title": "Starred",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "entry_ids"
+          ],
+          "title": "star_entryArguments"
+        }
+      },
+      {
+        "name": "import_opml",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "opml": {
+              "title": "Opml",
+              "type": "string"
+            }
+          },
+          "required": [
+            "opml"
+          ],
+          "title": "import_opmlArguments"
+        }
+      },
+      {
+        "name": "export_opml",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "title": "export_opmlArguments"
+        }
+      },
+      {
+        "name": "discover_feed",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "title": "Url",
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "title": "discover_feedArguments"
+        }
+      }
+    ],
+    "resources": [
+      "rss://subscriptions",
+      "rss://entries/unread"
+    ],
+    "prompts": [
+      "daily-digest"
+    ]
+  },
+  "cli": {
+    "subcommands": [
+      "serve",
+      "status",
+      "export-db",
+      "import-db"
+    ],
+    "serve_flags": [
+      "--transport",
+      "--host",
+      "--port",
+      "--path"
+    ],
+    "default_command": "serve"
+  },
+  "env": [
+    "RSS_MCP_DB",
+    "RSS_MCP_DB_URL",
+    "RSS_MCP_AUTH_TOKEN",
+    "RSS_MCP_AUTH_TOKENS",
+    "RSS_MCP_USER_AGENT",
+    "RSS_MCP_FETCH_CONCURRENCY",
+    "RSS_MCP_REFRESH_INTERVAL",
+    "RSS_MCP_DISABLE_AFTER_FAILURES",
+    "RSS_MCP_RETENTION_DAYS",
+    "RSS_MCP_RATE_LIMIT_PER_MINUTE",
+    "RSS_MCP_OTEL_OTLP_ENDPOINT",
+    "RSS_MCP_METRICS_TOKEN",
+    "RSS_MCP_LOG_FORMAT"
+  ],
+  "metrics": [
+    "rss_mcp_up",
+    "rss_mcp_info",
+    "rss_mcp_subscriptions",
+    "rss_mcp_feeds_empty",
+    "rss_mcp_entries",
+    "rss_mcp_feed_last_success_timestamp_seconds",
+    "rss_mcp_feed_consecutive_failures",
+    "rss_mcp_last_successful_fetch_timestamp_seconds",
+    "rss_mcp_refresh_interval_seconds",
+    "rss_mcp_retention_days",
+    "rss_mcp_prune_last_run_timestamp_seconds",
+    "rss_mcp_prune_removed_total",
+    "rss_mcp_digest_pending",
+    "rss_mcp_digest_delivered_24h",
+    "rss_mcp_tag_pending",
+    "rss_mcp_status_warnings"
+  ]
+}
