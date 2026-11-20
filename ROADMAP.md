@@ -61,6 +61,15 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 - Server-side connections (lifespan, prune loop, `/healthz`, `/metrics`) now use `autocommit=True`; the prune loop no longer runs schema migrations (the lifespan already did). CLI paths keep transactions, because `import-db --replace` depends on them for atomicity.
 - Regression tests: a read on an autocommit connection leaves `transaction_status = IDLE` (while a manual connection stays in a transaction), and the prune loop performs exactly zero migrations.
 
+## 0.6.0 — released 2026-11-21
+
+Born from the 0.5.2 incident: the lock that froze `/healthz` was invisible and the migration behind it had no time limit.
+
+- **Migrations are idempotent and fail fast.** A schema fingerprint (sha256 over every DDL statement) is recorded in `server_meta`; when it matches, `init_db` skips all DDL. Migrations run on a dedicated transactional connection with `lock_timeout = 5s`, so a blocked `ALTER` raises with a readable error instead of queueing for hours. Simulating an old schema in tests now requires clearing the fingerprint — that is the point.
+- **Transaction health is observable.** `rss_mcp_db_idle_in_transaction`, `rss_mcp_db_lock_waiters`, `rss_mcp_db_connections` (PostgreSQL), `server_status.database_health`, and a `warnings` entry when a connection sits idle in a transaction for more than five minutes.
+- **`rss-mcp digest`.** Terminal reading that shares the `get_digest` delivery cursor: markdown grouped by source, `--tag/--limit/--per-feed/--since/--mark-read/--json/--include-delivered/--replay-days`. The digest assembly was extracted so the tool and the CLI cannot diverge.
+- Frozen surface updated deliberately: three metric families and the `digest` subcommand added to `docs/freeze-manifest.json`.
+
 ## 0.5.x — remaining robustness work
 
 - `curl_cffi` (TLS impersonation) stays deferred. 2026-11-20: the live library had 0 failing and 0 empty feeds, and 24h of JSON logs contained no 403/429. Revisit only when a feed you want to keep fails with 403/429 plus a Cloudflare challenge; deleting the feed is still the cheaper answer.

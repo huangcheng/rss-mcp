@@ -119,6 +119,14 @@ def test_manifest_covers_every_emitted_metric(manifest, tmp_path):
 
     emitted = set(re.findall(r"^# TYPE (\S+) ", body, flags=re.MULTILINE))
     assert emitted, "no metric families rendered"
+    # PostgreSQL-only families cannot appear in a SQLite scrape; they are
+    # checked by test_postgres.py::test_lock_health_metrics_on_postgres.
+    pg_only = {
+        "rss_mcp_db_idle_in_transaction",
+        "rss_mcp_db_lock_waiters",
+        "rss_mcp_db_connections",
+    }
     # The seeded library exercises every conditional family, so the scrape is a
     # complete inventory; a new or renamed family must be frozen deliberately.
-    assert emitted == set(manifest["metrics"])
+    assert emitted == set(manifest["metrics"]) - pg_only
+    assert pg_only <= set(manifest["metrics"])

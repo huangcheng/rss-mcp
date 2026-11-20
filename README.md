@@ -96,7 +96,7 @@ Set `RSS_MCP_METRICS_TOKEN` to enable `GET /metrics` (Prometheus text format, be
 curl -H "Authorization: Bearer $RSS_MCP_METRICS_TOKEN" http://127.0.0.1:8000/metrics
 ```
 
-Metrics are state, not traffic — pair them with the OTel spans, which carry call counts and latency: `rss_mcp_subscriptions{state="ok|failing|disabled|muted|never_fetched"}` (mutually exclusive, so they sum to the subscription count), `rss_mcp_feeds_empty` (overlay: last fetch accepted zero items), `rss_mcp_entries{state="total|unread|starred|filtered|duplicates_hidden"}`, `rss_mcp_feed_last_success_timestamp_seconds{host}`, `rss_mcp_feed_consecutive_failures{host}`, `rss_mcp_prune_last_run_timestamp_seconds`, `rss_mcp_prune_removed_total`, `rss_mcp_retention_days`, `rss_mcp_digest_pending` (unread entries no digest has handed out yet), `rss_mcp_digest_delivered_24h`, `rss_mcp_tag_pending{tag}`, `rss_mcp_status_warnings` (alert on `> 0`), plus `rss_mcp_up` / `rss_mcp_info`. A scrape opens its own connection and never shares the request path's transaction.
+Metrics are state, not traffic — pair them with the OTel spans, which carry call counts and latency: `rss_mcp_subscriptions{state="ok|failing|disabled|muted|never_fetched"}` (mutually exclusive, so they sum to the subscription count), `rss_mcp_feeds_empty` (overlay: last fetch accepted zero items), `rss_mcp_entries{state="total|unread|starred|filtered|duplicates_hidden"}`, `rss_mcp_feed_last_success_timestamp_seconds{host}`, `rss_mcp_feed_consecutive_failures{host}`, `rss_mcp_prune_last_run_timestamp_seconds`, `rss_mcp_prune_removed_total`, `rss_mcp_retention_days`, `rss_mcp_digest_pending` (unread entries no digest has handed out yet), `rss_mcp_digest_delivered_24h`, `rss_mcp_tag_pending{tag}`, `rss_mcp_db_idle_in_transaction` / `rss_mcp_db_lock_waiters` / `rss_mcp_db_connections` (PostgreSQL transaction health), `rss_mcp_status_warnings` (alert on `> 0`), plus `rss_mcp_up` / `rss_mcp_info`. A scrape opens its own connection and never shares the request path's transaction.
 
 ### Backup, restore, and engine migration
 
@@ -105,6 +105,7 @@ Metrics are state, not traffic — pair them with the OTel spans, which carry ca
 ```bash
 rss-mcp export-db --out rss-backup.jsonl          # --out - streams to stdout
 rss-mcp export-db --out small.jsonl --no-content  # omit article bodies, keep summaries
+rss-mcp digest --limit 20 --mark-read             # terminal reading, same delivery cursor as get_digest
 rss-mcp import-db --in rss-backup.jsonl           # merge: match subscriptions by URL, entries by guid
 rss-mcp import-db --in rss-backup.jsonl --replace # wipe the target library first (destructive)
 ```

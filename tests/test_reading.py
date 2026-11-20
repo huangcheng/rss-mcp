@@ -358,3 +358,47 @@ def test_unrecorded_item_count_is_not_treated_as_empty(tmp_path):
     assert sub is not None and sub.last_item_count is None
     assert unrecorded["feeds"]["empty"] == 0
     assert recorded_zero["feeds"]["empty"] == 1
+
+
+def test_cli_digest_prints_and_advances_the_cursor(tmp_path, monkeypatch, capsys):
+    settings = _settings(tmp_path)
+    # Exactly one full digest: two sources x two entries.
+    _seed(settings, count=2)
+    monkeypatch.setenv("RSS_MCP_DB", str(settings.db_path))
+    monkeypatch.delenv("RSS_MCP_DB_URL", raising=False)  # it wins over RSS_MCP_DB
+
+    server_module.main(["digest", "--limit", "4", "--per-feed", "2"])
+    first = capsys.readouterr().out
+    server_module.main(["digest", "--limit", "4", "--per-feed", "2"])
+    second = capsys.readouterr().out
+
+    assert "未读摘要" in first and "本次 4 条" in first
+    assert "没有新的未读条目" in second
+
+
+def test_cli_digest_json_and_mark_read(tmp_path, monkeypatch, capsys):
+    settings = _settings(tmp_path)
+    _seed(settings, count=2)
+    monkeypatch.setenv("RSS_MCP_DB", str(settings.db_path))
+    monkeypatch.delenv("RSS_MCP_DB_URL", raising=False)  # it wins over RSS_MCP_DB
+
+    server_module.main(["digest", "--json", "--mark-read", "--per-feed", "2"])
+    payload = json.loads(capsys.readouterr().out)
+
+    conn, store = _open(settings)
+    unread = store.unread_counts()
+    conn.close()
+    assert payload["delivered"] == 4
+    assert payload["marked_read"] == 4
+    assert unread == {}
+
+
+def test_cli_digest_rejects_negative_replay_days_cleanly(tmp_path, monkeypatch, capsys):
+    settings = _settings(tmp_path)
+    monkeypatch.setenv("RSS_MCP_DB", str(settings.db_path))
+    monkeypatch.delenv("RSS_MCP_DB_URL", raising=False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        server_module.main(["digest", "--replay-days", "-1"])
+    assert "replay_days must be zero or greater" in str(excinfo.value)
+    assert "Traceback" not in capsys.readouterr().err

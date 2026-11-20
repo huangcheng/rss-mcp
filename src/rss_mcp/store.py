@@ -316,6 +316,33 @@ class Store:
         ).fetchone()
         return int(row["n"])
 
+    def lock_stats(self) -> dict[str, int] | None:
+        """Transaction health from pg_stat_activity; None on other engines.
+
+        A connection stuck "idle in transaction" holds ACCESS SHARE and is how
+        a migration blocked for hours on 2026-11-21, so it is a first-class
+        metric rather than a debugging detail.
+        """
+        if self.engine != "postgres":
+            return None
+        row = self._conn.execute(
+            """SELECT
+                   count(*) FILTER (WHERE state = 'idle in transaction') AS idle_in_transaction,
+                   count(*) FILTER (WHERE wait_event_type = 'Lock') AS lock_waiters,
+                   count(*) AS connections,
+                   COALESCE(max(extract(epoch FROM now() - state_change))
+                            FILTER (WHERE state = 'idle in transaction'), 0) AS oldest_idle_seconds
+               FROM pg_stat_activity
+               WHERE datname = current_database()""",
+            (),
+        ).fetchone()
+        return {
+            "idle_in_transaction": int(row["idle_in_transaction"]),
+            "lock_waiters": int(row["lock_waiters"]),
+            "connections": int(row["connections"]),
+            "oldest_idle_seconds": int(row["oldest_idle_seconds"]),
+        }
+
     def unread_counts(self, *, exclude_delivered: bool = False) -> dict[int, int]:
         """Visible unread entries per subscription, optionally skipping digests."""
         clauses = ["es.read_at IS NULL", "e.duplicate_of IS NULL", "e.filtered = 0"]

@@ -7,6 +7,7 @@ import pytest
 from mcp import Client
 from mcp.types import CallToolResult
 
+from rss_mcp import __version__
 from rss_mcp.config import Settings
 from rss_mcp.db import connect, init_db
 from rss_mcp.feed_client import FetchResult
@@ -70,7 +71,7 @@ async def test_tools_list_is_exactly_the_fifteen_tools_in_table_order(server_set
 
     server = create_server(server_settings)
     assert server.name == "rss-mcp"
-    assert server.version == "0.5.2"
+    assert server.version == __version__
     async with Client(server) as client:
         listed = await client.list_tools()
         caps = client.server_capabilities
@@ -80,7 +81,7 @@ async def test_tools_list_is_exactly_the_fifteen_tools_in_table_order(server_set
     assert caps.resources is not None
     assert caps.prompts is not None
     assert info is not None
-    assert info.version == "0.5.2"
+    assert info.version == __version__
     # subscriptions/listen is served: hosts can wait for resource updates.
     assert "subscriptions/listen" in server._lowlevel_server._request_handlers
 

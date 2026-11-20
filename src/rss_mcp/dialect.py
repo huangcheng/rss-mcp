@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
-from contextlib import contextmanager
 from typing import Any
 
 from rss_mcp.db_sqlite import SCHEMA as _SQLITE_SCHEMA, MIGRATIONS as _SQLITE_MIGRATIONS
@@ -99,6 +100,46 @@ def _fts_match_query(query: str) -> str | None:
     return " AND ".join(terms)
 
 
+_SCHEMA_KEY = "schema"
+_MIGRATION_LOCK_TIMEOUT = "5s"
+
+
+def _fingerprint(*statements: str) -> str:
+    digest = hashlib.sha256()
+    for statement in statements:
+        digest.update(statement.encode())
+        digest.update(b"\0")
+    return digest.hexdigest()[:32]
+
+
+def _applied_fingerprint(conn: Any) -> str | None:
+    """Read the recorded schema fingerprint; None when unreadable/absent."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM server_meta WHERE key = ?", (_SCHEMA_KEY,)
+        ).fetchone()
+    except Exception:
+        # Fresh database: server_meta itself does not exist yet. On PostgreSQL
+        # a failed statement poisons the transaction, so roll back.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+    return row["value"] if row else None
+
+
+def _record_fingerprint(conn: Any, fingerprint: str) -> None:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.execute(
+        "INSERT INTO server_meta (key, value, updated_at) VALUES (?, ?, ?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value,"
+        " updated_at = excluded.updated_at",
+        (_SCHEMA_KEY, fingerprint, now),
+    )
+    conn.commit()
+
+
 class SqliteDialect:
     name = "sqlite"
     insert_ignore = "OR IGNORE"
@@ -117,6 +158,11 @@ class SqliteDialect:
         return conn
 
     def init_schema(self, conn: sqlite3.Connection) -> None:
+        fingerprint = _fingerprint(
+            _SQLITE_SCHEMA, _CANONICAL_INDEX_DDL, *(ddl for _, _, ddl in _SQLITE_MIGRATIONS)
+        )
+        if _applied_fingerprint(conn) == fingerprint:
+            return
         conn.executescript(_SQLITE_SCHEMA)
         for table, column, ddl in _SQLITE_MIGRATIONS:
             columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -124,6 +170,7 @@ class SqliteDialect:
                 conn.execute(ddl)
         conn.execute(_CANONICAL_INDEX_DDL)
         conn.commit()
+        _record_fingerprint(conn, fingerprint)
 
     def tags_exists(self, alias: str) -> str:
         return f"EXISTS (SELECT 1 FROM json_each({alias}.tags) WHERE value = ?)"
@@ -228,24 +275,45 @@ class PostgresDialect:
         )
 
     def init_schema(self, conn: _PgConnection) -> None:
-        for statement in (*_PG_SCHEMA, *_PG_MIGRATIONS):
-            conn.execute(statement)
-        conn.execute(_CANONICAL_INDEX_DDL)
-        conn.commit()
-        self._relax_item_count(conn)
-        # Fold diacritics like SQLite's unicode61 tokenizer when the unaccent
-        # extension is available; restricted deployments fall back to 'simple'.
+        # Never queue behind a reader for hours: anything that needs a lock must
+        # fail loudly (2026-11-21: a blocked ALTER hung startup and /healthz).
+        conn.execute(f"SET lock_timeout = '{_MIGRATION_LOCK_TIMEOUT}'")
+        fingerprint = _fingerprint(*_PG_SCHEMA, *_PG_MIGRATIONS, _CANONICAL_INDEX_DDL)
+        if _applied_fingerprint(conn) != fingerprint:
+            for statement in (*_PG_SCHEMA, *_PG_MIGRATIONS):
+                conn.execute(statement)
+            conn.execute(_CANONICAL_INDEX_DDL)
+            conn.commit()
+            self._relax_item_count(conn)
+            _record_fingerprint(conn, fingerprint)
+        # Not fingerprinted on purpose: whether unaccent can be installed is an
+        # environment fact that may change after the schema was recorded (a DBA
+        # adds the extension later). Reconcile every start, cheaply.
+        self._ensure_unaccent(conn)
+        self._ensure_search_column(conn)
+
+    def _ensure_unaccent(self, conn: _PgConnection) -> None:
+        """Fold diacritics like SQLite's unicode61 tokenizer when available.
+
+        Restricted deployments fall back to 'simple'. Runs on every start
+        because extension availability is not part of the schema fingerprint.
+        """
         try:
             conn.execute("CREATE EXTENSION IF NOT EXISTS unaccent")
-            conn.execute("CREATE TEXT SEARCH CONFIGURATION rss_unaccent (COPY = simple)")
-            conn.execute(
-                "ALTER TEXT SEARCH CONFIGURATION rss_unaccent "
-                "ALTER MAPPING FOR hword, hword_part, word WITH unaccent, simple"
-            )
+            exists = conn.execute(
+                "SELECT 1 FROM pg_ts_config WHERE cfgname = 'rss_unaccent'"
+            ).fetchone()
+            if not exists:
+                conn.execute(
+                    "CREATE TEXT SEARCH CONFIGURATION rss_unaccent (COPY = simple)"
+                )
+                conn.execute(
+                    "ALTER TEXT SEARCH CONFIGURATION rss_unaccent "
+                    "ALTER MAPPING FOR hword, hword_part, word WITH unaccent, simple"
+                )
             conn.commit()
         except Exception:
             conn.rollback()
-        self._ensure_search_column(conn)
 
     def _relax_item_count(self, conn: _PgConnection) -> None:
         """Undo 0.5.0's NOT NULL DEFAULT 0 on last_item_count.

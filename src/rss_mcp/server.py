@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import logging
@@ -598,6 +599,119 @@ def build_http_app(
     return _RequestLogContext(_RateLimitMiddleware(app, settings.rate_limit_per_minute))
 
 
+async def _assemble_digest(
+    app: _App,
+    *,
+    since: str | None = None,
+    tag: str | None = None,
+    max_entries: int = 50,
+    per_feed: int = 3,
+    include_delivered: bool = False,
+    replay_days: int | None = None,
+    mark_read: bool = False,
+) -> tuple[dict[str, Any], int]:
+    """Digest assembly shared by the get_digest tool and `rss-mcp digest`.
+
+    Returns the payload and how many entries mark_read changed (the caller
+    sends the resource notification).
+    """
+    if replay_days is not None and replay_days < 0:
+        raise ToolError("replay_days must be zero or greater")
+    limit = _limit(app.settings, max_entries)
+    cap = max(1, min(per_feed, limit))
+    active = [sub for sub in app.store.list_subscriptions(tag=tag) if not sub.muted]
+    # Cutoff for hiding already-delivered entries: None disables the filter,
+    # "" hides every delivery, otherwise only deliveries newer than the replay
+    # window are hidden.
+    if include_delivered:
+        delivered_cutoff = None
+    elif replay_days is None:
+        delivered_cutoff = ""
+    else:
+        delivered_cutoff = _delivered_cutoff(replay_days)
+    # Per-source queries keep the pool diverse. Duplicates are fetched and
+    # resolved at assembly so a copy can stand in when its keeper sits deeper
+    # than the per-feed window in another feed.
+    pool: list[Entry] = []
+    for sub in active:
+        # No zero-unread skip here: a feed whose only unread entries are
+        # duplicate copies (unread_count 0) must still contribute stand-ins.
+        pool.extend(
+            app.store.list_entries(
+                subscription_id=sub.id,
+                unread_only=True,
+                since=since,
+                limit=cap,
+                include_duplicates=True,
+                hide_delivered_since=delivered_cutoff,
+            )
+        )
+    pool.sort(key=lambda entry: (entry.published_at or "", entry.id), reverse=True)
+    entries: list[Entry] = []
+    taken_articles: set[int] = set()
+    per_feed_counts: dict[int, int] = {}
+    for entry in pool:
+        if len(entries) >= limit:
+            break
+        if per_feed_counts.get(entry.subscription_id, 0) >= cap:
+            continue
+        article = entry.duplicate_of if entry.duplicate_of is not None else entry.id
+        if article in taken_articles:
+            continue
+        taken_articles.add(article)
+        per_feed_counts[entry.subscription_id] = per_feed_counts.get(entry.subscription_id, 0) + 1
+        entries.append(entry)
+    if entries:
+        # Record every pool row whose article was handed out, not just the rows
+        # returned: a duplicate copy that lost the assembly dedupe would
+        # otherwise resurface as the same article on the next call.
+        delivered_articles = set(taken_articles)
+        app.store.record_deliveries(
+            [
+                entry.id
+                for entry in pool
+                if (entry.duplicate_of if entry.duplicate_of is not None else entry.id)
+                in delivered_articles
+            ],
+            refresh=replay_days is not None,
+        )
+    marked = 0
+    if mark_read:
+        # Starred entries mean "keep for later": a digest must not eat them.
+        marked = app.store.mark_entries(
+            [entry.id for entry in entries if not entry.starred], True
+        )
+    visible = {sub.id for sub in active}
+    pending = sum(
+        count
+        for subscription_id, count in app.store.unread_counts(
+            exclude_delivered=True
+        ).items()
+        if subscription_id in visible
+    )
+    payload = {
+        "generated_at": _utc_now(),
+        "tag": tag,
+        "since": since,
+        "delivered": len(entries),
+        "marked_read": marked,
+        "pending": pending,
+        "total_unread": sum(sub.unread_count for sub in active),
+        "subscriptions": [
+            {
+                "id": sub.id,
+                "title": sub.title,
+                "tags": sub.tags,
+                "unread_count": sub.unread_count,
+            }
+            for sub in active
+            if sub.unread_count > 0
+        ],
+        "entries": [_entry_payload(entry, full=False) for entry in entries],
+    }
+    return payload, marked
+
+
 def create_server(settings: Settings | None = None) -> MCPServer:
     resolved = load_settings() if settings is None else settings
     holder: dict[str, _App] = {}
@@ -893,102 +1007,19 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         app = _app(ctx)
         if since is not None:
             since = _normalize_iso_timestamp(since, param="since")
-        if replay_days is not None and replay_days < 0:
-            raise ToolError("replay_days must be zero or greater")
-        limit = _limit(app.settings, max_entries)
-        cap = max(1, min(per_feed, limit))
-        active = [sub for sub in app.store.list_subscriptions(tag=tag) if not sub.muted]
-        # Cutoff for hiding already-delivered entries: None disables the
-        # filter, "" hides every delivery, otherwise only deliveries newer
-        # than the replay window are hidden.
-        if include_delivered:
-            delivered_cutoff = None
-        elif replay_days is None:
-            delivered_cutoff = ""
-        else:
-            delivered_cutoff = _delivered_cutoff(replay_days)
-        # Per-source queries keep the pool diverse. Duplicates are fetched and
-        # resolved at assembly so a copy can stand in when its keeper sits
-        # deeper than the per-feed window in another feed.
-        pool: list[Entry] = []
-        for sub in active:
-            # No zero-unread skip here: a feed whose only unread entries are
-            # duplicate copies (unread_count 0) must still contribute stand-ins.
-            pool.extend(
-                app.store.list_entries(
-                    subscription_id=sub.id,
-                    unread_only=True,
-                    since=since,
-                    limit=cap,
-                    include_duplicates=True,
-                    hide_delivered_since=delivered_cutoff,
-                )
-            )
-        pool.sort(key=lambda entry: (entry.published_at or "", entry.id), reverse=True)
-        entries: list[Entry] = []
-        taken_articles: set[int] = set()
-        per_feed_counts: dict[int, int] = {}
-        for entry in pool:
-            if len(entries) >= limit:
-                break
-            if per_feed_counts.get(entry.subscription_id, 0) >= cap:
-                continue
-            article = entry.duplicate_of if entry.duplicate_of is not None else entry.id
-            if article in taken_articles:
-                continue
-            taken_articles.add(article)
-            per_feed_counts[entry.subscription_id] = per_feed_counts.get(entry.subscription_id, 0) + 1
-            entries.append(entry)
-        if entries:
-            # Record every pool row whose article was handed out, not just the
-            # rows returned: a duplicate copy that lost the assembly dedupe
-            # would otherwise resurface as the same article on the next call.
-            delivered_articles = set(taken_articles)
-            app.store.record_deliveries(
-                [
-                    entry.id
-                    for entry in pool
-                    if (entry.duplicate_of if entry.duplicate_of is not None else entry.id)
-                    in delivered_articles
-                ],
-                refresh=replay_days is not None,
-            )
-        marked = 0
-        if mark_read:
-            # Starred entries mean "keep for later": a digest must not eat them.
-            marked = app.store.mark_entries(
-                [entry.id for entry in entries if not entry.starred], True
-            )
-            if marked:
-                await _notify(app, _UNREAD_URI, _SUBSCRIPTIONS_URI)
-        visible = {sub.id for sub in active}
-        pending = sum(
-            count
-            for subscription_id, count in app.store.unread_counts(
-                exclude_delivered=True
-            ).items()
-            if subscription_id in visible
+        payload, marked = await _assemble_digest(
+            app,
+            since=since,
+            tag=tag,
+            max_entries=max_entries,
+            per_feed=per_feed,
+            include_delivered=include_delivered,
+            replay_days=replay_days,
+            mark_read=mark_read,
         )
-        return {
-            "generated_at": _utc_now(),
-            "tag": tag,
-            "since": since,
-            "delivered": len(entries),
-            "marked_read": marked,
-            "pending": pending,
-            "total_unread": sum(sub.unread_count for sub in active),
-            "subscriptions": [
-                {
-                    "id": sub.id,
-                    "title": sub.title,
-                    "tags": sub.tags,
-                    "unread_count": sub.unread_count,
-                }
-                for sub in active
-                if sub.unread_count > 0
-            ],
-            "entries": [_entry_payload(entry, full=False) for entry in entries],
-        }
+        if marked:
+            await _notify(app, _UNREAD_URI, _SUBSCRIPTIONS_URI)
+        return payload
 
     @server.tool()
     async def mark_entry(
@@ -1135,6 +1166,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Omit stored article bodies (smaller, summaries kept).",
     )
+    digest = subparsers.add_parser(
+        "digest",
+        help="Print an unread digest for the terminal (same delivery cursor as get_digest).",
+    )
+    digest.add_argument("--tag", default=None, help="Only subscriptions carrying this tag.")
+    digest.add_argument("--limit", type=int, default=20, help="Maximum entries (default 20).")
+    digest.add_argument(
+        "--per-feed", type=int, default=3, help="Per-source cap (default 3)."
+    )
+    digest.add_argument("--since", default=None, help="Only entries published at or after this ISO 8601 time.")
+    digest.add_argument(
+        "--include-delivered",
+        action="store_true",
+        help="Ignore the delivery cursor and show entries already printed before.",
+    )
+    digest.add_argument(
+        "--replay-days", type=int, default=None, help="Re-offer entries last printed more than N days ago."
+    )
+    digest.add_argument(
+        "--mark-read", action="store_true", help="Mark the printed entries read (starred entries are kept)."
+    )
+    digest.add_argument("--json", action="store_true", help="Print the raw payload instead of markdown.")
     load = subparsers.add_parser(
         "import-db",
         help="Load a JSON Lines export (- for stdin).",
@@ -1205,10 +1258,98 @@ def _run_import(settings: Settings, args: Any) -> None:
     print(json.dumps({"import": summary}, ensure_ascii=False, indent=2))
 
 
+def _age_label(published_at: str | None) -> str:
+    stamp = _parse_utc(published_at)
+    if stamp is None:
+        return ""
+    minutes = int((datetime.now(timezone.utc) - stamp).total_seconds() // 60)
+    if minutes < 60:
+        return f"{max(minutes, 0)}m"
+    if minutes < 24 * 60:
+        return f"{minutes // 60}h"
+    return f"{minutes // (24 * 60)}d"
+
+
+def _parse_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def render_digest(payload: dict[str, Any]) -> str:
+    """Markdown for a terminal: grouped by source, newest first."""
+    lines = [
+        f"# 未读摘要 · {payload['generated_at']}",
+        "",
+        f"待读 {payload['pending']} · 本次 {payload['delivered']} 条"
+        + (f" · 标记已读 {payload['marked_read']}" if payload["marked_read"] else ""),
+        "",
+    ]
+    titles = {sub["id"]: sub["title"] or f"#{sub['id']}" for sub in payload["subscriptions"]}
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for entry in payload["entries"]:
+        grouped.setdefault(entry["subscription_id"], []).append(entry)
+    if not grouped:
+        lines.append("_没有新的未读条目。_")
+        return "\n".join(lines) + "\n"
+    for subscription_id, items in grouped.items():
+        lines.append(f"## {titles.get(subscription_id, f'#{subscription_id}')}")
+        for entry in items:
+            age = _age_label(entry.get("published_at"))
+            suffix = f" · {age}" if age else ""
+            if entry.get("url"):
+                lines.append(f"- [{entry['title']}]({entry['url']}){suffix}")
+            else:
+                lines.append(f"- {entry['title']}{suffix}")
+            summary = (entry.get("summary") or "").strip().replace("\n", " ")
+            if summary:
+                lines.append(f"  {summary[:160]}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _run_digest(settings: Settings, args: Any) -> None:
+    since = None
+    if args.since:
+        try:
+            since = _normalize_iso_timestamp(args.since, param="since")
+        except ToolError as exc:
+            raise SystemExit(f"rss-mcp: {exc}") from None
+    conn = connect_db(settings, autocommit=True)
+    try:
+        init_db(conn)
+        app = _App(settings=settings, store=Store(conn))
+        try:
+            payload, _marked = asyncio.run(_assemble_digest(
+                app,
+                since=since,
+                tag=args.tag,
+                max_entries=args.limit,
+                per_feed=args.per_feed,
+                include_delivered=args.include_delivered,
+                replay_days=args.replay_days,
+                mark_read=args.mark_read,
+            ))
+        except ToolError as exc:
+            raise SystemExit(f"rss-mcp: {exc}") from None
+    finally:
+        conn.close()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        sys.stdout.write(render_digest(payload))
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
     json_logs = configure_logging(os.environ.get("RSS_MCP_LOG_FORMAT"))
     settings = load_settings()
+    if args.command == "digest":
+        _run_digest(settings, args)
+        return
     if args.command == "export-db":
         _run_export(settings, args)
         return

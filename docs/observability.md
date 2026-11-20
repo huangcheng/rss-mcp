@@ -50,6 +50,9 @@ RSS_MCP_OTEL_OTLP_ENDPOINT=http://tempo:4318/v1/traces
 | `rss_mcp_digest_pending` | gauge | 可见未读且尚未被 digest 投递过的条目 |
 | `rss_mcp_digest_delivered_24h` | gauge | 24h 内投递条数 |
 | `rss_mcp_tag_pending{tag}` | gauge | 按标签的待读（muted 不计，disabled 仍计） |
+| `rss_mcp_db_idle_in_transaction` | gauge | 处于 idle-in-transaction 的连接数（仅 PostgreSQL） |
+| `rss_mcp_db_lock_waiters` | gauge | 正在等锁的会话数（仅 PostgreSQL） |
+| `rss_mcp_db_connections` | gauge | 当前库的连接数（仅 PostgreSQL） |
 | `rss_mcp_status_warnings` | gauge | `server_status.warnings` 条数；**告警看这个 > 0** |
 
 指标名与标签是 1.0 冻结面的一部分，见 [stability.md](./stability.md)。
@@ -74,7 +77,9 @@ RSS_MCP_OTEL_OTLP_ENDPOINT=http://tempo:4318/v1/traces
 ```
 
 `warnings` 覆盖已真实踩过的静默故障：设置了保留期但 prune 从未运行/超过 3h 没跑、
-24h 没有任何成功抓取、库存在一天以上却从未抓取成功、有 failing 源、有抓取成功但零条目的源。
+24h 没有任何成功抓取、库存在一天以上却从未抓取成功、有 failing 源、有抓取成功但零条目的源，
+以及**有连接 idle in transaction 超过 5 分钟**（这种连接会长期占着 ACCESS SHARE，把下一次
+迁移挡死——2026-11-21 的事故）。`server_status.database_health` 直接给出这四个数字。
 **刻意暂停的源不是警告。**
 
 ## 参考 dashboard 与告警（Grafana）
@@ -93,6 +98,7 @@ RSS_MCP_OTEL_OTLP_ENDPOINT=http://tempo:4318/v1/traces
 | `rss_mcp_status_warnings > 0` | 库自检报告了问题（看 `warnings`） |
 | `(time() - rss_mcp_prune_last_run_timestamp_seconds) > 21600` | prune 停摆超过 6h（0.3.5 那类静默失效） |
 | `(rss_mcp_digest_pending > 500) and (rss_mcp_digest_delivered_24h == 0)` | 只进不出：待读堆积且一天没有投递 |
+| `rss_mcp_db_lock_waiters > 0` 持续 5m | 有会话在等锁；再久就会重演迁移被挡死 |
 
 > 说明：Grafana 11.5.1 的 Tempo 数据源**不支持面板内 TraceQL 检索**（`backend TraceQL search queries
 > are not supported`）。dashboard 里用"Explore 深链 + span-metrics 表格"替代 Trace 列表，这是 Grafana

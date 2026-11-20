@@ -157,6 +157,18 @@ def render_metrics(
         )
         parts.append(f"rss_mcp_prune_removed_total {int(prune['total_removed'])}")
 
+    db_health = payload["database_health"]
+    if db_health is not None:
+        for name, help_text in (
+            ("rss_mcp_db_idle_in_transaction", "Connections idle inside a transaction."),
+            ("rss_mcp_db_lock_waiters", "Sessions currently waiting on a lock."),
+            ("rss_mcp_db_connections", "Connections to this database."),
+        ):
+            _family(parts, name, "gauge", help_text)
+        parts.append(f"rss_mcp_db_idle_in_transaction {db_health['idle_in_transaction']}")
+        parts.append(f"rss_mcp_db_lock_waiters {db_health['lock_waiters']}")
+        parts.append(f"rss_mcp_db_connections {db_health['connections']}")
+
     _family(
         parts,
         "rss_mcp_retention_days",

@@ -721,6 +721,7 @@
     "subcommands": [
       "serve",
       "status",
+      "digest",
       "export-db",
       "import-db"
     ],
@@ -763,6 +764,9 @@
     "rss_mcp_digest_pending",
     "rss_mcp_digest_delivered_24h",
     "rss_mcp_tag_pending",
-    "rss_mcp_status_warnings"
+    "rss_mcp_status_warnings",
+    "rss_mcp_db_idle_in_transaction",
+    "rss_mcp_db_lock_waiters",
+    "rss_mcp_db_connections"
   ]
 }

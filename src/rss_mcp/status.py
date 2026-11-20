@@ -22,6 +22,9 @@ from rss_mcp.store import Store
 # The prune loop wakes hourly when retention is configured; three missed
 # cycles is a real signal (the 0.3.5 silent no-op went unnoticed for 14h).
 PRUNE_STALE_SECONDS = 3 * 3600
+# Autocommit serving connections should never sit idle in a transaction;
+# anything beyond a few minutes is a leak that will block the next migration.
+IDLE_TRANSACTION_WARN_SECONDS = 300
 # A reading library that has not completed a single fetch in a day is stuck,
 # whatever the driver is supposed to be doing.
 FETCH_STALE_SECONDS = 24 * 3600
@@ -105,8 +108,15 @@ def _warnings(
     prune: dict[str, Any],
     last_success: str | None,
     now: datetime,
+    db_health: dict[str, int] | None = None,
 ) -> list[str]:
     warnings: list[str] = []
+    if db_health and db_health["oldest_idle_seconds"] > IDLE_TRANSACTION_WARN_SECONDS:
+        warnings.append(
+            f"{db_health['idle_in_transaction']} database connection(s) idle in "
+            f"transaction for up to {db_health['oldest_idle_seconds'] // 60}m; "
+            "they block schema migrations"
+        )
     if settings.retention_days:
         if not prune:
             warnings.append(
@@ -218,6 +228,7 @@ def status_payload(
     ]
     # Auto-disabled first (they carry an error), then by failure count.
     failing.sort(key=lambda row: (not row["last_error"], -(row["failure_count"] or 0)))
+    db_health = store.lock_stats()
     return {
         "version": __version__,
         "generated_at": format_timestamp(now),
@@ -247,7 +258,16 @@ def status_payload(
             "seconds_since_last_prune": _age_seconds(now, prune.get("last_run_at")),
         },
         # Feeds that need attention, mirroring list_subscriptions(failing_only=true).
+        "database_health": db_health,
         "reading": reading_state(store, subscriptions, now=now),
         "failing_feeds": failing[:10],
-        "warnings": _warnings(settings, subscriptions, health, prune, last_success, now),
+        "warnings": _warnings(
+            settings,
+            subscriptions,
+            health,
+            prune,
+            last_success,
+            now,
+            db_health,
+        ),
     }

@@ -94,6 +94,9 @@ rss-mcp import-db --in backup.jsonl --replace   # 单事务清库重建；坏文
 ## 升级
 
 1. 拉代码/换镜像 → 重启容器（迁移在启动时自动执行，只加不减）
+   - 迁移用独立的**事务连接**，并设置 `lock_timeout = 5s`：拿不到表锁会在 5 秒内报错退出，
+     而不是像 2026-11-21 那样在读者后面排队几小时
+   - schema 指纹记在 `server_meta`，指纹一致时启动会**完全跳过 DDL**
 2. `curl /healthz` 看 `version`
 3. `docker exec rss-mcp rss-mcp status` 看 `warnings` 是否为空
 4. `curl -H "Authorization: Bearer $RSS_MCP_METRICS_TOKEN" /metrics | grep rss_mcp_up`
@@ -104,6 +107,8 @@ rss-mcp import-db --in backup.jsonl --replace   # 单事务清库重建；坏文
 ```
 rss-mcp [serve] [--transport stdio|streamable-http] [--host H] [--port P] [--path /mcp]
 rss-mcp status                 # 与 server_status 工具同一份 JSON
+rss-mcp digest [--tag T] [--limit N] [--per-feed N] [--mark-read] [--json]
+                               # 终端直接读，和 get_digest 共用投递游标
 rss-mcp export-db --out -      # stdout；--since ISO；--no-content
 rss-mcp import-db --in -       # stdin；--replace
 ```

@@ -323,6 +323,9 @@ def test_pg_migration_restores_feed_hints(pg_url):
     init_db(conn)
     for column in ("ttl", "skip_hours", "skip_days"):
         conn.execute(f"ALTER TABLE subscriptions DROP COLUMN IF EXISTS {column}")
+    # Simulating a pre-migration database also means forgetting the recorded
+    # schema fingerprint; otherwise init_db correctly skips all DDL.
+    conn.execute("DELETE FROM server_meta WHERE key = 'schema'")
     conn.commit()
     init_db(conn)
     store = Store(conn)
@@ -341,6 +344,7 @@ def test_pg_migration_restores_fetch_interval(pg_url):
     conn = connect_db(settings)
     init_db(conn)
     conn.execute("ALTER TABLE subscriptions DROP COLUMN IF EXISTS fetch_interval")
+    conn.execute("DELETE FROM server_meta WHERE key = 'schema'")
     conn.commit()
     init_db(conn)
     store = Store(conn)
@@ -544,3 +548,62 @@ async def test_serving_paths_request_autocommit(pg_url, monkeypatch):
     assert calls[0] is False
     assert calls[1:], "no serving connection was opened"
     assert all(calls[1:]), calls
+
+
+def test_lock_health_metrics_on_postgres(pg_store, pg_url):
+    """The 2026-11-21 stall must be visible as a metric, not just a hang."""
+    from rss_mcp.metrics import render_metrics
+
+    stats = pg_store.lock_stats()
+    assert stats is not None
+    assert {"idle_in_transaction", "lock_waiters", "connections"} <= set(stats)
+    assert stats["connections"] >= 1
+
+    body = render_metrics(_settings(pg_url), pg_store)
+    for name in (
+        "rss_mcp_db_idle_in_transaction",
+        "rss_mcp_db_lock_waiters",
+        "rss_mcp_db_connections",
+    ):
+        assert f"# TYPE {name} gauge" in body
+
+
+def test_migration_fails_fast_behind_a_reader(pg_url, tmp_path):
+    """A blocked ALTER must time out in seconds, not hang for hours."""
+    import time
+
+    from rss_mcp.db import connect_db, init_db
+
+    settings = _settings(pg_url)
+    bootstrap = connect_db(settings)
+    init_db(bootstrap)  # the session database may not have a schema yet
+    bootstrap.close()
+    reader = connect_db(settings)  # non-autocommit: holds ACCESS SHARE after a SELECT
+    reader.execute("SELECT COUNT(*) AS n FROM subscriptions").fetchone()
+
+    migrator = connect_db(settings)
+    migrator.execute("UPDATE server_meta SET value = 'stale' WHERE key = 'schema'")
+    migrator.commit()
+    started = time.monotonic()
+    try:
+        with pytest.raises(Exception) as excinfo:
+            init_db(migrator)
+    finally:
+        reader.rollback()
+    elapsed = time.monotonic() - started
+
+    assert "lock timeout" in str(excinfo.value).lower() or "canceling statement" in str(
+        excinfo.value
+    ).lower()
+    assert elapsed < 20, f"migration waited {elapsed:.1f}s behind a reader"
+    migrator.rollback()
+    reader.close()
+
+    # Once the reader lets go, the same migration succeeds and records itself.
+    migrator = connect_db(settings)
+    init_db(migrator)
+    recorded = migrator.execute(
+        "SELECT value FROM server_meta WHERE key = 'schema'"
+    ).fetchone()
+    migrator.close()
+    assert recorded["value"] != "stale"
