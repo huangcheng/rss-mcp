@@ -13,12 +13,19 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return SqliteDialect().connect(db_path)
 
 
-def connect_db(settings: Settings) -> Any:
-    """Open the configured database: RSS_MCP_DB_URL wins over RSS_MCP_DB."""
+def connect_db(settings: Settings, *, autocommit: bool = False) -> Any:
+    """Open the configured database: RSS_MCP_DB_URL wins over RSS_MCP_DB.
+
+    `autocommit=True` is for long-lived server connections. psycopg opens a
+    transaction on the first SELECT and keeps it open until commit/rollback;
+    such a connection then holds ACCESS SHARE on every table it touched, which
+    blocks the next ALTER (2026-11-21: a read left open blocked the hourly
+    prune's migration for 2h50m and hung /healthz behind it).
+    """
     url = settings.db_url
     if url:
         if url.startswith(("postgresql://", "postgres://")):
-            return PostgresDialect().connect(url)
+            return PostgresDialect().connect(url, autocommit=autocommit)
         if url.startswith("sqlite:///"):
             return connect(Path(url[len("sqlite:///"):]).expanduser())
         raise ValueError(f"unsupported RSS_MCP_DB_URL scheme: {url.partition('://')[0]}")

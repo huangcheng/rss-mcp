@@ -273,6 +273,7 @@ class Store:
         """
         if not entry_ids:
             return 0
+        self.begin_batch()
         stamp = when or _utc_now()
         conflict = (
             "DO UPDATE SET delivered_at = excluded.delivered_at"
@@ -336,6 +337,15 @@ class Store:
             (),
         ).fetchall()
         return {int(row["sid"]): int(row["n"]) for row in rows}
+
+    def begin_batch(self) -> None:
+        """Batch a multi-row write (PostgreSQL autocommit connections).
+
+        A no-op elsewhere; the method's own commit() closes the batch.
+        """
+        begin = getattr(self._conn, "begin_batch", None)
+        if begin is not None:
+            begin()
 
     def rebuild_duplicates(self) -> None:
         """Re-elect cross-feed keepers after a bulk load."""
@@ -704,6 +714,7 @@ class Store:
         include_keywords: list[str] | None = None,
         exclude_keywords: list[str] | None = None,
     ) -> int:
+        self.begin_batch()
         written = 0
         flipped = False
         neq = self._dialect.null_safe_neq
@@ -872,6 +883,7 @@ class Store:
         return _entry_from_row(row)
 
     def mark_entries(self, entry_ids: list[int], read: bool) -> int:
+        self.begin_batch()
         changed = 0
         read_at = _utc_now() if read else None
         seen: set[int] = set()
@@ -961,6 +973,7 @@ class Store:
         later", and catch-up must not consume it. Explicit id-based
         mark_entries remains the way to change starred entries.
         """
+        self.begin_batch()
         clauses: list[str] = []
         params: list[object] = []
         if tag is not None:
@@ -989,6 +1002,7 @@ class Store:
         return cursor.rowcount
 
     def set_starred(self, entry_ids: list[int], starred: bool) -> int:
+        self.begin_batch()
         changed = 0
         flag = int(starred)
         seen: set[int] = set()

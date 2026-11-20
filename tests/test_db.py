@@ -299,7 +299,7 @@ def test_connect_db_accepts_postgres_scheme_alias(tmp_path: Path, monkeypatch) -
     from rss_mcp.config import Settings
 
     sentinel = object()
-    monkeypatch.setattr(db_module.PostgresDialect, "connect", lambda self, url: sentinel)
+    monkeypatch.setattr(db_module.PostgresDialect, "connect", lambda self, url, **kwargs: sentinel)
     settings = Settings(
         db_path=tmp_path / "ignored.db", user_agent="rss-mcp/test", db_url="postgres://u:p@h/db"
     )

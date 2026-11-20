@@ -55,6 +55,12 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 
 - `subscriptions.last_item_count` is nullable and means "items accepted by the last parsed fetch"; NULL (no fetch recorded yet) is not "zero items". 0.5.0 shipped the column as `NOT NULL DEFAULT 0`, which made every pre-existing feed look empty (79 false positives on the live library) until its next fetch. PostgreSQL startup now relaxes the column and clears the sentinel once.
 
+## 0.5.2 — released 2026-11-21
+
+- **Fix: a read transaction could freeze the server.** Long-lived Postgres connections left an implicit transaction open after a `SELECT`; that connection then held `ACCESS SHARE` on every table it read. The hourly prune ran `init_db` (all migrations, including `ALTER TABLE`), which needs `ACCESS EXCLUSIVE` — it blocked for 2h50m behind that read, and `/healthz` queued behind the blocked ALTER. Live symptom: `pg_stat_activity` showed one `idle in transaction` reader plus one `Lock/relation` waiter.
+- Server-side connections (lifespan, prune loop, `/healthz`, `/metrics`) now use `autocommit=True`; the prune loop no longer runs schema migrations (the lifespan already did). CLI paths keep transactions, because `import-db --replace` depends on them for atomicity.
+- Regression tests: a read on an autocommit connection leaves `transaction_status = IDLE` (while a manual connection stays in a transaction), and the prune loop performs exactly zero migrations.
+
 ## 0.5.x — remaining robustness work
 
 - `curl_cffi` (TLS impersonation) stays deferred. 2026-11-20: the live library had 0 failing and 0 empty feeds, and 24h of JSON logs contained no 403/429. Revisit only when a feed you want to keep fails with 403/429 plus a Cloudflare challenge; deleting the feed is still the cheaper answer.

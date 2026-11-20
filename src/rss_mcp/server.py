@@ -357,8 +357,11 @@ async def _prune_loop(app: _App) -> None:
         await anyio.sleep(_PRUNE_INTERVAL_SECONDS)
         conn = None
         try:
-            conn = connect_db(app.settings)
-            init_db(conn)
+            # No init_db here: the schema is already migrated by the lifespan,
+            # and running migrations every hour takes ACCESS EXCLUSIVE on every
+            # table, which is exactly how a leaked read transaction turned into
+            # a hung /healthz (2026-11-21).
+            conn = connect_db(app.settings, autocommit=True)
             store = Store(conn)
             removed = _prune(_App(settings=app.settings, store=store))
             # Record every cycle, including no-ops: a silent zero-match DELETE
@@ -378,9 +381,19 @@ def _app_lifespan(settings: Settings, holder: dict[str, _App], events: InMemoryS
     @asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[_App]:
         setup_telemetry(settings)
-        conn = connect_db(settings)
+        # Migrations run on their own transactional connection: init_schema
+        # pairs DDL with conditional follow-ups and relies on commit/rollback
+        # being real (an autocommit connection turns those into no-ops).
+        migration_conn = connect_db(settings)
         try:
-            init_db(conn)
+            init_db(migration_conn)
+        finally:
+            migration_conn.close()
+        # The serving connection is autocommit: psycopg keeps a transaction
+        # open after the first SELECT, and such a connection holds ACCESS
+        # SHARE on everything it read, blocking later DDL (2026-11-21).
+        conn = connect_db(settings, autocommit=True)
+        try:
             app = _App(settings=settings, store=Store(conn), events=events)
             holder["app"] = app
             if settings.refresh_interval or settings.retention_days:
@@ -541,7 +554,7 @@ class _RateLimitMiddleware:
 async def _healthz(request: Request) -> JSONResponse:
     settings: Settings = request.app.state.settings
     try:
-        conn = connect_db(settings)
+        conn = connect_db(settings, autocommit=True)
         try:
             count = conn.execute("SELECT COUNT(*) AS n FROM subscriptions").fetchone()["n"]
         finally:

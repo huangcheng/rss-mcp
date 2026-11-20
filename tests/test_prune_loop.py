@@ -135,3 +135,34 @@ async def test_scheduler_loop_no_longer_prunes(monkeypatch):
     # The scheduler ran refreshes, but pruning must NOT have been triggered
     # by the scheduler loop (it's now on _prune_loop's schedule).
     assert pruned == []
+
+@pytest.mark.asyncio
+async def test_prune_loop_runs_no_schema_migrations(monkeypatch):
+    """Schema DDL every hour takes ACCESS EXCLUSIVE and can block behind reads."""
+    from rss_mcp import server
+
+    settings = Settings(
+        db_path=Path("/tmp") / "prune-no-ddl.db",
+        user_agent="rss-mcp/test",
+        retention_days=90,
+    )
+    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(settings.db_path)
+    init_db(conn)
+    conn.close()
+
+    ddl_calls: list[int] = []
+    real_init_db = server.init_db
+
+    def spy(conn):
+        ddl_calls.append(1)
+        return real_init_db(conn)
+
+    monkeypatch.setattr(server, "init_db", spy)
+    monkeypatch.setattr(server, "_PRUNE_INTERVAL_SECONDS", 0.05)
+
+    async with Client(server.create_server(settings)):
+        await asyncio.sleep(0.4)
+
+    # One call from the lifespan; none from the prune cycles.
+    assert len(ddl_calls) == 1

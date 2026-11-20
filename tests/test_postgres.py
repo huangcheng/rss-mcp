@@ -480,3 +480,67 @@ def test_digest_deliveries_and_counts_parity_on_postgres(pg_store):
     assert reading["pending"] == 2
     assert reading["delivered_24h"] == 1
     assert reading["by_tag"] == {"news": 2}
+
+
+def test_server_connection_does_not_hold_a_read_transaction(pg_url):
+    """A read must not leave an open transaction: it blocks later DDL."""
+    from psycopg.pq import TransactionStatus
+
+    from rss_mcp.db import connect_db
+
+    settings = _settings(pg_url)
+    from rss_mcp.db import init_db
+
+    conn = connect_db(settings, autocommit=True)
+    init_db(conn)  # the session-scoped fixture does not migrate for us
+    conn.execute("SELECT COUNT(*) AS n FROM subscriptions").fetchone()
+    assert conn._conn.info.transaction_status == TransactionStatus.IDLE
+    conn.close()
+
+    # The CLI/import path keeps transactions on purpose (atomic --replace).
+    manual = connect_db(settings)
+    manual.execute("SELECT COUNT(*) AS n FROM subscriptions").fetchone()
+    assert manual._conn.info.transaction_status != TransactionStatus.IDLE
+    manual.close()
+
+
+@pytest.mark.asyncio
+async def test_serving_paths_request_autocommit(pg_url, monkeypatch):
+    """A dropped `autocommit=True` at any call site must fail this test."""
+    import httpx
+
+    from rss_mcp import metrics as metrics_module
+    from rss_mcp import server as server_module
+    from rss_mcp.config import Settings
+
+    settings = Settings(db_path=Path("/tmp/ignored.db"), user_agent="rss-mcp/test", db_url=pg_url)
+    calls: list[bool] = []
+    real_server_connect = server_module.connect_db
+    real_metrics_connect = metrics_module.connect_db
+
+    def spy_server(*args, **kwargs):
+        calls.append(bool(kwargs.get("autocommit")))
+        return real_server_connect(*args, **kwargs)
+
+    def spy_metrics(*args, **kwargs):
+        calls.append(bool(kwargs.get("autocommit")))
+        return real_metrics_connect(*args, **kwargs)
+
+    monkeypatch.setattr(server_module, "connect_db", spy_server)
+    monkeypatch.setattr(metrics_module, "connect_db", spy_metrics)
+
+    from mcp import Client
+
+    async with Client(server_module.create_server(settings)):
+        app = server_module.build_http_app(server_module.create_server(settings), settings)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            assert (await client.get("/healthz")).status_code == 200
+    metrics_module.render_from_settings(settings)
+
+    # First call is the transactional migration connection; everything after
+    # it serves requests and must be autocommit.
+    assert calls[0] is False
+    assert calls[1:], "no serving connection was opened"
+    assert all(calls[1:]), calls

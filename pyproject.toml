@@ -1,6 +1,6 @@
 [project]
 name = "rss-mcp-server"
-version = "0.5.1"
+version = "0.5.2"
 description = "Agent-only MCP server for RSS subscriptions, fetch, and unread tracking."
 readme = "README.md"
 license = "MIT"

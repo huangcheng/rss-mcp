@@ -188,7 +188,7 @@ def render_from_settings(settings: Settings, *, now: datetime | None = None) -> 
     """Open a dedicated connection so a scrape never shares a transaction."""
     conn = None
     try:
-        conn = connect_db(settings)
+        conn = connect_db(settings, autocommit=True)
         # No schema bootstrap and no dedup maintenance here: a scrape must be
         # cheap and read-only, and the server has healed the library at startup.
         return render_metrics(settings, Store(conn, maintain=False), now=now)

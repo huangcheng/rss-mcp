@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from contextlib import contextmanager
 from typing import Any
 
 from rss_mcp.db_sqlite import SCHEMA as _SQLITE_SCHEMA, MIGRATIONS as _SQLITE_MIGRATIONS
@@ -159,12 +160,30 @@ class _PgConnection:
         self._ts_config: str | None = None
 
     def execute(self, sql: str, params: Any = ()) -> Any:
-        return self._conn.execute(sql.replace("?", "%s"), params)
+        try:
+            return self._conn.execute(sql.replace("?", "%s"), params)
+        except Exception:
+            # Never leave a half-applied batch inside an implicit transaction.
+            from psycopg.pq import TransactionStatus
+
+            if self._conn.info.transaction_status != TransactionStatus.IDLE:
+                self._conn.rollback()
+            raise
 
     def executemany(self, sql: str, params_seq: Any) -> None:
         # psycopg3 exposes executemany on cursors only.
         with self._conn.cursor() as cursor:
             cursor.executemany(sql.replace("?", "%s"), params_seq)
+
+    def begin_batch(self) -> None:
+        """Open one transaction for a multi-row write on an autocommit conn.
+
+        Without this every row is its own transaction (a review measured 504
+        commits for 500 rows). The caller's existing commit() ends the batch,
+        and execute() rolls back if any statement inside it fails.
+        """
+        if getattr(self._conn, "autocommit", False):
+            self._conn.execute("BEGIN")
 
     def commit(self) -> None:
         self._conn.commit()
@@ -196,7 +215,7 @@ class PostgresDialect:
     def __init__(self, conn: _PgConnection | None = None) -> None:
         self._conn = conn
 
-    def connect(self, url: str) -> _PgConnection:
+    def connect(self, url: str, *, autocommit: bool = False) -> _PgConnection:
         try:
             import psycopg
             from psycopg.rows import dict_row
@@ -204,7 +223,9 @@ class PostgresDialect:
             raise RuntimeError(
                 "PostgreSQL support requires the postgres extra: pip install rss-mcp-server[postgres]"
             ) from exc
-        return _PgConnection(psycopg.connect(url, row_factory=dict_row, autocommit=False))
+        return _PgConnection(
+            psycopg.connect(url, row_factory=dict_row, autocommit=autocommit)
+        )
 
     def init_schema(self, conn: _PgConnection) -> None:
         for statement in (*_PG_SCHEMA, *_PG_MIGRATIONS):
