@@ -181,7 +181,12 @@ def test_status_warns_about_feeds_that_store_nothing(tmp_path):
     conn, store = _open(settings)
     empty = store.add_subscription("https://empty.example/feed")
     store.update_fetch_meta(
-        empty.id, etag=None, last_modified=None, last_fetched_at=_stamp(timedelta(minutes=-5)), last_error=None
+        empty.id,
+        etag=None,
+        last_modified=None,
+        last_fetched_at=_stamp(timedelta(minutes=-5)),
+        last_error=None,
+        item_count=0,
     )
     payload = status_payload(settings, store)
     conn.close()
@@ -323,3 +328,33 @@ def test_export_import_keeps_delivery_state(tmp_path):
     conn.close()
     assert summary["deliveries_restored"] == 1
     assert entry.id in delivered
+
+
+def test_unrecorded_item_count_is_not_treated_as_empty(tmp_path):
+    """NULL means "no parsed fetch yet"; only a recorded zero means empty."""
+    settings = _settings(tmp_path)
+    conn, store = _open(settings)
+    sub = store.add_subscription("https://new.example/feed")
+    store.update_fetch_meta(
+        sub.id,
+        etag=None,
+        last_modified=None,
+        last_fetched_at=_stamp(timedelta(minutes=-5)),
+        last_error=None,
+    )
+    unrecorded = status_payload(settings, store)
+    sub = store.get_subscription(sub.id)
+    store.update_fetch_meta(
+        sub.id,
+        etag=None,
+        last_modified=None,
+        last_fetched_at=_stamp(timedelta(minutes=-5)),
+        last_error=None,
+        item_count=0,
+    )
+    recorded_zero = status_payload(settings, store)
+    conn.close()
+
+    assert sub is not None and sub.last_item_count is None
+    assert unrecorded["feeds"]["empty"] == 0
+    assert recorded_zero["feeds"]["empty"] == 1

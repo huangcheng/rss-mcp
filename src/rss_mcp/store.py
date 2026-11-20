@@ -178,7 +178,7 @@ def _subscription_from_row(row: Any) -> Subscription:
         ttl=row["ttl"],
         skip_hours=json.loads(row["skip_hours"]) if row["skip_hours"] else [],
         skip_days=_tags_from_column(row["skip_days"]),
-        last_item_count=row["last_item_count"] or 0,
+        last_item_count=row["last_item_count"],
     )
 
 

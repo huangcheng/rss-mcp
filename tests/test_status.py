@@ -76,13 +76,23 @@ def test_status_payload_reports_health_and_warnings(tmp_path):
     conn, store = _open(settings)
     ok_sub = store.add_subscription("https://ok.example/feed")
     store.update_fetch_meta(
-        ok_sub.id, etag=None, last_modified=None, last_fetched_at=_stamp(timedelta(minutes=-5)), last_error=None
+        ok_sub.id,
+        etag=None,
+        last_modified=None,
+        last_fetched_at=_stamp(timedelta(minutes=-5)),
+        last_error=None,
+        item_count=0,
     )
     bad_sub = store.add_subscription("https://bad.example/feed")
     store.record_fetch_failure(bad_sub.id, "HTTP 500")
     muted = store.add_subscription("https://muted.example/feed", muted=True)
     store.update_fetch_meta(
-        muted.id, etag=None, last_modified=None, last_fetched_at=_stamp(timedelta(minutes=-5)), last_error=None
+        muted.id,
+        etag=None,
+        last_modified=None,
+        last_fetched_at=_stamp(timedelta(minutes=-5)),
+        last_error=None,
+        item_count=0,
     )
     store.add_subscription("https://idle.example/feed")
     store.record_prune(0)

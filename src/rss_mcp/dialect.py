@@ -80,7 +80,7 @@ _PG_MIGRATIONS = (
     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ttl INTEGER",
     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS skip_hours TEXT",
     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS skip_days TEXT",
-    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_item_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_item_count INTEGER",
 )
 
 _CANONICAL_INDEX_DDL = "CREATE INDEX IF NOT EXISTS entries_canonical_idx ON entries(canonical_url)"
@@ -211,6 +211,7 @@ class PostgresDialect:
             conn.execute(statement)
         conn.execute(_CANONICAL_INDEX_DDL)
         conn.commit()
+        self._relax_item_count(conn)
         # Fold diacritics like SQLite's unicode61 tokenizer when the unaccent
         # extension is available; restricted deployments fall back to 'simple'.
         try:
@@ -224,6 +225,27 @@ class PostgresDialect:
         except Exception:
             conn.rollback()
         self._ensure_search_column(conn)
+
+    def _relax_item_count(self, conn: _PgConnection) -> None:
+        """Undo 0.5.0's NOT NULL DEFAULT 0 on last_item_count.
+
+        That default made every pre-existing subscription look like a feed
+        whose last fetch accepted zero items, i.e. 79 false "empty" feeds on
+        the live library. NULL must mean "not recorded yet"; a real zero is
+        written by the next parsed fetch.
+        """
+        row = conn.execute(
+            """SELECT is_nullable FROM information_schema.columns
+               WHERE table_schema = current_schema()
+                 AND table_name = 'subscriptions'
+                 AND column_name = 'last_item_count'"""
+        ).fetchone()
+        if row is None or row["is_nullable"] == "YES":
+            return
+        conn.execute("ALTER TABLE subscriptions ALTER COLUMN last_item_count DROP NOT NULL")
+        conn.execute("ALTER TABLE subscriptions ALTER COLUMN last_item_count DROP DEFAULT")
+        conn.execute("UPDATE subscriptions SET last_item_count = NULL WHERE last_item_count = 0")
+        conn.commit()
 
     def _ensure_search_column(self, conn: _PgConnection) -> None:
         cfg_row = conn.execute(

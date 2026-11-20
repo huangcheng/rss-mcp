@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     ttl INTEGER,
     skip_hours TEXT,
     skip_days TEXT,
-    last_item_count INTEGER NOT NULL DEFAULT 0
+    last_item_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS entries (
@@ -96,7 +96,9 @@ MIGRATIONS = (
     (
         "subscriptions",
         "last_item_count",
-        "ALTER TABLE subscriptions ADD COLUMN last_item_count INTEGER NOT NULL DEFAULT 0",
+        # Nullable on purpose: NULL means "no parsed fetch recorded yet",
+        # which is different from a fetch that accepted zero items.
+        "ALTER TABLE subscriptions ADD COLUMN last_item_count INTEGER",
     ),
     ("subscriptions", "user_agent", "ALTER TABLE subscriptions ADD COLUMN user_agent TEXT"),
     ("subscriptions", "headers", "ALTER TABLE subscriptions ADD COLUMN headers TEXT"),

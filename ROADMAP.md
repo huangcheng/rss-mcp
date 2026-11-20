@@ -51,6 +51,10 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 - **Reading state**: `server_status.reading` (`pending`, `delivered_24h`, `by_tag`), plus metrics `rss_mcp_digest_pending`, `rss_mcp_digest_delivered_24h`, `rss_mcp_tag_pending{tag}`.
 - **Empty-feed detection**: feeds that fetch successfully but store no entries are a distinct bucket (`feeds.empty`, `rss_mcp_subscriptions{state="empty"}`) and a warning — the silent case that hid 10 feeds on the live library.
 
+## 0.5.1 — released 2026-11-20
+
+- `subscriptions.last_item_count` is nullable and means "items accepted by the last parsed fetch"; NULL (no fetch recorded yet) is not "zero items". 0.5.0 shipped the column as `NOT NULL DEFAULT 0`, which made every pre-existing feed look empty (79 false positives on the live library) until its next fetch. PostgreSQL startup now relaxes the column and clears the sentinel once.
+
 ## 0.5.x — remaining robustness work
 
 - Optional `curl_cffi` extra for TLS-impersonation fetches against bot-walled feeds.

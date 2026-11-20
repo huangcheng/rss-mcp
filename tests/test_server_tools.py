@@ -70,7 +70,7 @@ async def test_tools_list_is_exactly_the_fifteen_tools_in_table_order(server_set
 
     server = create_server(server_settings)
     assert server.name == "rss-mcp"
-    assert server.version == "0.5.0"
+    assert server.version == "0.5.1"
     async with Client(server) as client:
         listed = await client.list_tools()
         caps = client.server_capabilities
