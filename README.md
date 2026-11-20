@@ -1,6 +1,6 @@
 # rss-mcp
 
-Agent-only MCP server for RSS and Atom. A host drives it over stdio (default) or Streamable HTTP. There is no GUI, TUI, or interactive CLI. Subscriptions, cached entries, unread state, and full-text search live in one local SQLite file. Fourteen tools, two read-only resources, one prompt, and live update notifications; no MCP Apps.
+Agent-only MCP server for RSS and Atom. A host drives it over stdio (default) or Streamable HTTP. There is no GUI, TUI, or interactive CLI. Subscriptions, cached entries, unread state, and full-text search live in one local SQLite file. Fifteen tools, two read-only resources, one prompt, and live update notifications; no MCP Apps.
 
 Protocol: [MCP 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) (stdio or Streamable HTTP; tools + resources) via the official Python SDK v2 (`mcp` ≥ 2.3).
 
@@ -76,6 +76,20 @@ Without a token the endpoint is unauthenticated: keep the default loopback bind,
 
 The HTTP app also serves an unauthenticated `GET /healthz` (JSON: status, version, subscription count) for monitoring, and applies a per-client sliding-window rate limit (`RSS_MCP_RATE_LIMIT_PER_MINUTE`, default 120, `0` disables; keyed on bearer token or client IP, replies `429` when exceeded).
 
+### Prometheus metrics
+
+Set `RSS_MCP_METRICS_TOKEN` to enable `GET /metrics` (Prometheus text format, bearer-protected with that token; the route answers `404` when the variable is unset):
+
+```bash
+curl -H "Authorization: Bearer $RSS_MCP_METRICS_TOKEN" http://127.0.0.1:8000/metrics
+```
+
+Metrics are state, not traffic — pair them with the OTel spans, which carry call counts and latency: `rss_mcp_subscriptions{state="ok|failing|disabled|muted|never_fetched"}`, `rss_mcp_entries{state="total|unread|starred|filtered|duplicates_hidden"}`, `rss_mcp_feed_last_success_timestamp_seconds{host}`, `rss_mcp_feed_consecutive_failures{host}`, `rss_mcp_prune_last_run_timestamp_seconds`, `rss_mcp_prune_removed_total`, `rss_mcp_retention_days`, `rss_mcp_status_warnings` (alert on `> 0`), plus `rss_mcp_up` / `rss_mcp_info`. A scrape opens its own connection and never shares the request path's transaction.
+
+### Self-inspection
+
+`server_status` (tool) and `rss-mcp status` (CLI, prints the same JSON) report database counts, feed health, scheduling/retention configuration, the last prune run, feeds needing attention, and `warnings`. Warnings cover the silent-failure cases this server has actually hit: retention configured but pruning never ran (or went stale), no feed fetching successfully (including the never-fetched case, after a one-day grace period), and failing feeds. Deliberately paused feeds are not warnings.
+
 ## Server behavior
 
 - **Concurrent fetching**: `fetch_feed` without an id refreshes all subscriptions concurrently (`RSS_MCP_FETCH_CONCURRENCY`, default 8).
@@ -122,6 +136,7 @@ The container binds `0.0.0.0` internally (required for port mapping), so set `RS
 | `RSS_MCP_REFRESH_INTERVAL` | unset (no background refresh; seconds when set) |
 | `RSS_MCP_DISABLE_AFTER_FAILURES` | `5` (`0` never auto-disable) |
 | `RSS_MCP_RETENTION_DAYS` | unset (keep entries forever) |
+| `RSS_MCP_METRICS_TOKEN` | unset (`/metrics` disabled; set it to enable a bearer-protected scrape endpoint) |
 | `RSS_MCP_RATE_LIMIT_PER_MINUTE` | `120` (`0` disables; HTTP only) |
 | `RSS_MCP_OTEL_OTLP_ENDPOINT` | unset (traces off); set to an OTLP/HTTP trace URL (e.g. `http://tempo:43210/v1/traces`) to enable — requires the `[otel]` extra |
 
@@ -144,6 +159,7 @@ Both engines implement the same behavior: subscriptions, entries, read/star stat
 - `update_subscription` — Edit title/tags/user_agent/headers/disabled/muted/filters/fetch_interval. Omitted fields are unchanged; empty string/dict/list clears; `disabled=false` re-enables and resets failures; keyword rule changes re-apply to cached entries; `fetch_interval` (seconds) sets a per-feed minimum between refreshes, `0` clears it.
 - `remove_subscription` — Delete a subscription and its cached entries.
 - `list_subscriptions` — List subscriptions with unread counts and fetch health, optionally filtered by `tag`. `failing_only=true` returns errored/auto-disabled feeds, each with a `remediation` hint (retry, set a browser `user_agent`, or remove + re-add).
+- `server_status` — Self-inspection in one call: database counts (entries/unread/starred/filtered/hidden duplicates), feed-health buckets, scheduling and retention configuration, the last prune run, feeds needing attention, and a `warnings` list (stalled fetching, retention that never ran, failing feeds). Empty warnings means nothing looks wrong. The same payload backs `rss-mcp status` and `/metrics`.
 - `fetch_feed` — Fetch one subscription, or every subscription concurrently when the id is omitted (disabled, backing-off, inside-`fetch_interval`/RSS-`ttl`, or in RSS `skipHours`/`skipDays` windows are skipped in bulk; fetching by id re-enables and bypasses the gates).
 - `list_entries` — List cached entries (article bodies omitted). Cross-feed duplicates and keyword-filtered entries are hidden; muted subscriptions drop out of aggregate views (explicit `subscription_id` keeps them). Filter by `tag` or `starred`; `since` accepts ISO 8601. Limit falls back to the server default and is clamped.
 - `read_entry` — Return one entry with full content and enclosures. `fetch_full` replaces content only when article text is returned. `mark_read` marks it read.

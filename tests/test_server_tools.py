@@ -18,6 +18,7 @@ TOOL_NAMES = [
     "update_subscription",
     "remove_subscription",
     "list_subscriptions",
+    "server_status",
     "fetch_feed",
     "list_entries",
     "read_entry",
@@ -63,7 +64,7 @@ async def _ok(client: Client, name: str, arguments: dict | None = None) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_tools_list_is_exactly_the_fourteen_tools_in_table_order(server_settings: Settings) -> None:
+async def test_tools_list_is_exactly_the_fifteen_tools_in_table_order(server_settings: Settings) -> None:
     # Drops a tool, renames one, or lists them in a different order.
     from rss_mcp.server import create_server
 

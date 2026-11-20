@@ -183,9 +183,14 @@ def _subscription_from_row(row: Any) -> Subscription:
 class Store:
     """Engine-agnostic storage; SQL dialect differences live in the dialect layer."""
 
-    def __init__(self, conn: Any) -> None:
+    def __init__(self, conn: Any, *, maintain: bool = True) -> None:
         self._conn = conn
         self._dialect = dialect_for(conn)
+        if not maintain:
+            # Read-only consumers (metrics scrapes) skip the healing passes:
+            # they are idempotent, already run at startup, and cost a full
+            # table scan each time.
+            return
         self._backfill_canonical_keys()
         # Heal shadowed keepers first (e.g. a crash between rule change and
         # re-election), then converge duplicate links.
@@ -249,6 +254,78 @@ class Store:
                  )"""
         )
         self._conn.commit()
+
+    @property
+    def engine(self) -> str:
+        return self._dialect.name
+
+    def stats(self) -> dict[str, int]:
+        """Library-wide counts in one statement.
+
+        Feed health buckets are owned by `status.feed_health`, which applies a
+        precedence (disabled beats failing beats muted) that a set of
+        independent COUNTs cannot express; keeping them here too allowed the
+        two to disagree.
+        """
+        row = self._conn.execute(
+            """SELECT
+                   (SELECT COUNT(*) FROM subscriptions) AS subscriptions,
+                   (SELECT COUNT(*) FROM entries) AS entries,
+                   (SELECT COUNT(*) FROM entries WHERE filtered = 1) AS entries_filtered,
+                   (SELECT COUNT(*) FROM entries WHERE duplicate_of IS NOT NULL)
+                       AS entries_duplicates,
+                   (SELECT COUNT(*) FROM entry_state WHERE starred = 1) AS entries_starred,
+                   (SELECT COUNT(*)
+                      FROM entries AS e
+                      LEFT JOIN entry_state AS es ON es.entry_id = e.id
+                     WHERE es.read_at IS NULL
+                       AND e.duplicate_of IS NULL
+                       AND e.filtered = 0
+                       AND NOT EXISTS (SELECT 1 FROM subscriptions AS ms
+                                        WHERE ms.id = e.subscription_id AND ms.muted = 1))
+                       AS entries_unread""",
+            (),
+        ).fetchone()
+        return {key: int(row[key]) for key in row.keys()}
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO server_meta (key, value, updated_at) VALUES (?, ?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value,"
+            " updated_at = excluded.updated_at",
+            (key, value, _utc_now()),
+        )
+        self._conn.commit()
+
+    def get_meta(self, key: str) -> dict[str, str] | None:
+        row = self._conn.execute(
+            "SELECT key, value, updated_at FROM server_meta WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {"key": row["key"], "value": row["value"], "updated_at": row["updated_at"]}
+
+    def record_prune(self, removed: int, *, when: str | None = None) -> dict[str, int | str]:
+        """Persist the last prune run so a silent no-op becomes visible.
+
+        Read-modify-write: correct for the single pruning writer this server
+        ships (one process owns the loop). Replicas sharing one database would
+        need an atomic increment.
+        """
+        total = 0
+        stored = self.get_meta("prune")
+        if stored and stored["value"]:
+            try:
+                total = int(json.loads(stored["value"]).get("total_removed") or 0)
+            except (TypeError, ValueError, AttributeError):
+                total = 0
+        payload = {
+            "last_run_at": when or _utc_now(),
+            "last_removed": removed,
+            "total_removed": total + removed,
+        }
+        self.set_meta("prune", json.dumps(payload))
+        return payload
 
     def add_subscription(
         self,

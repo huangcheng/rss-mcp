@@ -7,6 +7,7 @@ neither is available or psycopg is not installed.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,7 @@ def _settings(pg_url: str) -> Settings:
 def pg_store(pg_url):
     conn = connect_db(_settings(pg_url))
     init_db(conn)
-    conn.execute("TRUNCATE subscriptions, entries, entry_state RESTART IDENTITY CASCADE")
+    conn.execute("TRUNCATE subscriptions, entries, entry_state, server_meta RESTART IDENTITY CASCADE")
     conn.commit()
     yield Store(conn)
     conn.close()
@@ -138,7 +139,7 @@ def test_healthz_reports_ok_on_postgres(pg_url):
     settings = _settings(pg_url)
     conn = connect_db(settings)
     init_db(conn)
-    conn.execute("TRUNCATE subscriptions, entries, entry_state RESTART IDENTITY CASCADE")
+    conn.execute("TRUNCATE subscriptions, entries, entry_state, server_meta RESTART IDENTITY CASCADE")
     conn.commit()
     Store(conn).add_subscription("https://example.com/health.xml")
     conn.close()
@@ -373,3 +374,38 @@ def test_filter_parity_on_postgres(pg_store):
     pg_store.record_fetch_failure(news.id, "HTTP 403")
     failing = pg_store.list_subscriptions(failing_only=True)
     assert [s.id for s in failing] == [news.id]
+
+
+def test_server_meta_and_stats_parity_on_postgres(pg_store, pg_url):
+    """The 0.4.0 self-inspection surface must work on the deployment engine."""
+    from rss_mcp.status import status_payload
+
+    sub = pg_store.add_subscription("https://meta.example/feed")
+    pg_store.upsert_entries(
+        sub.id,
+        [
+            EntryInput(guid="a", title="Alpha"),
+            EntryInput(guid="b", title="Beta"),
+        ],
+    )
+    entries = {entry.guid: entry for entry in pg_store.list_entries(subscription_id=sub.id, limit=10)}
+    pg_store.mark_entries([entries["a"].id], read=True)
+    pg_store.set_starred([entries["b"].id], starred=True)
+
+    stats = pg_store.stats()
+    assert stats["subscriptions"] == 1
+    assert stats["entries"] == 2
+    assert stats["entries_unread"] == 1
+    assert stats["entries_starred"] == 1
+
+    pg_store.record_prune(5, when="2026-11-20T00:00:00Z")
+    payload = pg_store.record_prune(7)
+    stored = pg_store.get_meta("prune")
+    assert payload["total_removed"] == 12
+    assert json.loads(stored["value"])["last_removed"] == 7
+
+    status = status_payload(_settings(pg_url), pg_store)
+    assert status["database"]["engine"] == "postgres"
+    assert status["database"]["unread"] == 1
+    assert status["retention"]["prune_total_removed"] == 12
+    assert status["feeds"]["total"] == 1

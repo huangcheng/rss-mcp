@@ -44,7 +44,7 @@ async def main(wheel: str) -> None:
         info = client.server_info
         assert info.name == "rss-mcp", info
         tools = await client.list_tools()
-        assert len(tools.tools) == 14, [t.name for t in tools.tools]
+        assert len(tools.tools) == 15, [t.name for t in tools.tools]
         resources = await client.list_resources()
         assert len(resources.resources) == 2
         prompts = await client.list_prompts()

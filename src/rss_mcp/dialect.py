@@ -51,6 +51,11 @@ _PG_SCHEMA = (
         read_at TEXT,
         starred INTEGER NOT NULL DEFAULT 0
     )""",
+    """CREATE TABLE IF NOT EXISTS server_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT NOT NULL
+    )""",
 )
 
 _PG_MIGRATIONS = (

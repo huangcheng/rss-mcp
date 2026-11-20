@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import secrets
+import sys
 import time
 from collections import deque
 from collections.abc import AsyncIterator
@@ -28,15 +29,18 @@ from mcp.shared.subscriptions import ResourceUpdated
 from pydantic import Field
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse, Response
 
 from rss_mcp import __version__
 from rss_mcp.config import Settings, load_settings
 from rss_mcp.db import connect_db, init_db
 from rss_mcp.feed_client import discover_feeds, fetch_feed
+from rss_mcp.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
+from rss_mcp.metrics import render_from_settings
 from rss_mcp.models import Entry, Subscription
 from rss_mcp.opml import build_opml, parse_opml
 from rss_mcp.readability_fetch import fetch_article_text
+from rss_mcp.status import status_payload
 from rss_mcp.store import Store
 from rss_mcp.telemetry import setup_telemetry, shutdown_telemetry
 
@@ -345,7 +349,11 @@ async def _prune_loop(app: _App) -> None:
         try:
             conn = connect_db(app.settings)
             init_db(conn)
-            removed = _prune(_App(settings=app.settings, store=Store(conn)))
+            store = Store(conn)
+            removed = _prune(_App(settings=app.settings, store=store))
+            # Record every cycle, including no-ops: a silent zero-match DELETE
+            # is exactly what status and /metrics must be able to expose.
+            store.record_prune(removed)
             if removed > 0:
                 logger.info("prune loop removed %d expired entries", removed)
                 await _notify(app, _UNREAD_URI, _SUBSCRIPTIONS_URI)
@@ -504,6 +512,26 @@ async def _healthz(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "version": __version__, "subscriptions": count})
 
 
+async def _metrics_endpoint(request: Request) -> Response:
+    settings: Settings = request.app.state.settings
+    expected = settings.metrics_token
+    if not expected:
+        # Opt-in surface: unset token means the route does not exist.
+        return PlainTextResponse("not found\n", status_code=404)
+    header = request.headers.get("authorization", "")
+    scheme, _, presented = header.partition(" ")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(
+        presented.strip().encode(), expected.encode()
+    ):
+        return PlainTextResponse(
+            "unauthorized\n", status_code=401, headers={"WWW-Authenticate": "Bearer"}
+        )
+    # Rendering touches the database, and a scrape must never block the loop
+    # or share the lifespan connection's transaction.
+    body = await anyio.to_thread.run_sync(render_from_settings, settings)
+    return Response(body, media_type=METRICS_CONTENT_TYPE)
+
+
 def build_http_app(
     server: MCPServer,
     settings: Settings,
@@ -514,6 +542,7 @@ def build_http_app(
     app = server.streamable_http_app(streamable_http_path=path, host=host)
     app.state.settings = settings
     app.add_route("/healthz", _healthz, methods=["GET"])
+    app.add_route("/metrics", _metrics_endpoint, methods=["GET"])
     return _RateLimitMiddleware(app, settings.rate_limit_per_minute)
 
 
@@ -692,6 +721,12 @@ def create_server(settings: Settings | None = None) -> MCPServer:
                 payload["remediation"] = hint
             payloads.append(payload)
         return {"subscriptions": payloads}
+
+    @server.tool()
+    async def server_status(*, ctx: Context) -> dict[str, Any]:
+        """Self-inspection: database counts, feed health buckets, scheduling/retention configuration, last prune run, failing feeds, and warnings. Use it to answer "is this server healthy?" without shell access — an empty warnings list means nothing looks wrong."""
+        app = _app(ctx)
+        return status_payload(app.settings, app.store)
 
     @server.tool()
     async def fetch_feed(subscription_id: int | None = None, *, ctx: Context) -> dict[str, Any]:
@@ -939,11 +974,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
     return server
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        prog="rss-mcp",
-        description="Agent-only MCP server for RSS subscriptions (stdio by default).",
-    )
+def _serve_options(parser: Any) -> None:
     parser.add_argument(
         "--transport",
         choices=("stdio", "streamable-http"),
@@ -966,8 +997,47 @@ def main(argv: list[str] | None = None) -> None:
         default="/mcp",
         help="Endpoint path for streamable-http (default: /mcp)",
     )
-    args = parser.parse_args(argv)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    # `serve` is the default command, so the historical flag-only invocation
+    # (`rss-mcp --transport streamable-http ...`, the Docker CMD) keeps
+    # working without hand-scanning argv: argparse itself knows which tokens
+    # are flag values. The serve flags live on a shared parent so both
+    # `rss-mcp --port 9000` and `rss-mcp serve --port 9000` parse.
+    common = argparse.ArgumentParser(add_help=False)
+    _serve_options(common)
+    parser = argparse.ArgumentParser(
+        prog="rss-mcp",
+        description="Agent-only MCP server for RSS subscriptions (stdio by default).",
+        parents=[common],
+    )
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser(
+        "serve",
+        parents=[common],
+        help="Run the MCP server (default).",
+    )
+    subparsers.add_parser(
+        "status",
+        help="Print server self-inspection (database counts, feed health, warnings) as JSON.",
+    )
+    parser.set_defaults(command="serve")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
     settings = load_settings()
+    if args.command == "status":
+        conn = connect_db(settings)
+        try:
+            init_db(conn)
+            payload = status_payload(settings, Store(conn))
+        finally:
+            conn.close()
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
     server = create_server(settings)
     if args.transport == "stdio":
         server.run()

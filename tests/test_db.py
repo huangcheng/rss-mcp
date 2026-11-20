@@ -22,7 +22,7 @@ def test_init_db_creates_tables(tmp_path: Path) -> None:
             "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
         )
     }
-    assert {"subscriptions", "entries", "entry_state", "entries_fts"} <= names
+    assert {"subscriptions", "entries", "entry_state", "entries_fts", "server_meta"} <= names
 
     def columns(table: str) -> list[str]:
         return [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]

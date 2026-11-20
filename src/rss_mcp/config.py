@@ -46,6 +46,7 @@ class Settings:
     retention_days: int | None = None
     rate_limit_per_minute: int = 120
     otel_otlp_endpoint: str | None = None
+    metrics_token: str | None = None
 
     def tokens(self) -> list[str]:
         combined = list(self.auth_tokens)
@@ -85,4 +86,5 @@ def load_settings() -> Settings:
         retention_days=_optional_int_env("RSS_MCP_RETENTION_DAYS"),
         rate_limit_per_minute=max(0, _int_env("RSS_MCP_RATE_LIMIT_PER_MINUTE", 120)),
         otel_otlp_endpoint=(os.environ.get("RSS_MCP_OTEL_OTLP_ENDPOINT") or "").strip() or None,
+        metrics_token=(os.environ.get("RSS_MCP_METRICS_TOKEN") or "").strip() or None,
     )
