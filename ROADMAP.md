@@ -57,7 +57,7 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 
 ## 0.5.x — remaining robustness work
 
-- Optional `curl_cffi` extra for TLS-impersonation fetches against bot-walled feeds.
+- `curl_cffi` (TLS impersonation) stays deferred. 2026-11-20: the live library had 0 failing and 0 empty feeds, and 24h of JSON logs contained no 403/429. Revisit only when a feed you want to keep fails with 403/429 plus a Cloudflare challenge; deleting the feed is still the cheaper answer.
 
 ## 1.0.0 — stability commitment
 
