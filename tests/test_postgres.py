@@ -8,6 +8,7 @@ neither is available or psycopg is not installed.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ psycopg = pytest.importorskip("psycopg")
 from rss_mcp.config import Settings
 from rss_mcp.db import connect_db, init_db
 from rss_mcp.models import EntryInput
+from rss_mcp.status import reading_state
 from rss_mcp.store import Store
 
 
@@ -443,3 +445,38 @@ def test_sqlite_export_imports_into_postgres(pg_store, tmp_path):
     assert {row.guid for row in entries} == {"m1", "m2"}
     assert sum(1 for row in entries if row.read_at) == 1
     assert json.loads(lines[-1])["type"] == "entry"
+
+
+def test_digest_deliveries_and_counts_parity_on_postgres(pg_store):
+    """Incremental-digest bookkeeping must behave the same on the live engine."""
+    sub = pg_store.add_subscription("https://digest.example/feed", tags=["news"])
+    pg_store.upsert_entries(
+        sub.id,
+        [
+            EntryInput(guid="d1", title="One"),
+            EntryInput(guid="d2", title="Two"),
+            EntryInput(guid="d3", title="Three"),
+        ],
+    )
+    entries = pg_store.list_entries(subscription_id=sub.id, limit=10)
+
+    assert pg_store.unread_counts() == {sub.id: 3}
+
+    assert pg_store.record_deliveries([entries[0].id]) == 1
+    assert pg_store.record_deliveries([entries[0].id]) == 0  # first delivery wins
+    assert pg_store.unread_counts(exclude_delivered=True) == {sub.id: 2}
+    assert len(pg_store.delivery_times([entry.id for entry in entries])) == 1
+    assert pg_store.delivered_since("2000-01-01T00:00:00Z") == 1
+
+    pending = pg_store.list_entries(
+        subscription_id=sub.id, hide_delivered_since="", limit=10
+    )
+    # list_entries is newest-first, so entries[0] is the delivered one.
+    assert {entry.guid for entry in pending} == {entry.guid for entry in entries[1:]}
+
+    reading = reading_state(
+        pg_store, pg_store.list_subscriptions(), now=datetime.now(timezone.utc)
+    )
+    assert reading["pending"] == 2
+    assert reading["delivered_24h"] == 1
+    assert reading["by_tag"] == {"news": 2}

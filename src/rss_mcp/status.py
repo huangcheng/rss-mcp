@@ -10,7 +10,7 @@ settings, which means it stays truthful when the fetch driver is external
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -145,7 +145,38 @@ def _warnings(
         warnings.append(
             f"{health['failing']} feed(s) failing; see list_subscriptions(failing_only=true)"
         )
+    if health.get("empty"):
+        warnings.append(
+            f"{health['empty']} feed(s) fetch successfully but store no entries; "
+            "the feed may be empty upstream or parse to nothing"
+        )
     return warnings
+
+
+def reading_state(store: Store, subscriptions: list[Subscription], *, now: datetime) -> dict[str, Any]:
+    """What has been handed out, and what is still waiting, per tag."""
+    visible = {sub.id for sub in subscriptions if not sub.muted}
+    pending_by_subscription = store.unread_counts(exclude_delivered=True)
+    pending = sum(n for sid, n in pending_by_subscription.items() if sid in visible)
+    by_tag: dict[str, int] = {}
+    for sub in subscriptions:
+        # Same visibility as `pending` above and get_digest's feed selection:
+        # muted feeds are hidden, disabled ones keep their entries readable.
+        if sub.muted:
+            continue
+        count = pending_by_subscription.get(sub.id, 0)
+        if not count:
+            continue
+        for tag in sub.tags or []:
+            by_tag[tag] = by_tag.get(tag, 0) + count
+    delivered_24h = store.delivered_since(
+        (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    return {
+        "pending": pending,
+        "delivered_24h": delivered_24h,
+        "by_tag": dict(sorted(by_tag.items(), key=lambda item: -item[1])),
+    }
 
 
 def status_payload(
@@ -159,6 +190,17 @@ def status_payload(
     subscriptions = store.list_subscriptions()
     health = feed_health(subscriptions)
     health["total"] = len(subscriptions)
+    # "Empty" means the last parsed fetch accepted zero items. Counting cached
+    # rows instead would flag healthy low-volume feeds as soon as retention
+    # pruned their only entry.
+    health["empty"] = sum(
+        1
+        for sub in subscriptions
+        if not sub.disabled
+        and not sub.last_error
+        and sub.last_fetched_at
+        and sub.last_item_count == 0
+    )
     prune = prune_state(store)
     successes = [sub.last_fetched_at for sub in subscriptions if not sub.last_error]
     last_success = max((stamp for stamp in successes if stamp), default=None)
@@ -205,6 +247,7 @@ def status_payload(
             "seconds_since_last_prune": _age_seconds(now, prune.get("last_run_at")),
         },
         # Feeds that need attention, mirroring list_subscriptions(failing_only=true).
+        "reading": reading_state(store, subscriptions, now=now),
         "failing_feeds": failing[:10],
         "warnings": _warnings(settings, subscriptions, health, prune, last_success, now),
     }

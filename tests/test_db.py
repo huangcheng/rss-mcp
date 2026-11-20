@@ -48,6 +48,7 @@ def test_init_db_creates_tables(tmp_path: Path) -> None:
         "ttl",
         "skip_hours",
         "skip_days",
+        "last_item_count",
     ]
     assert columns("entries") == [
         "id",

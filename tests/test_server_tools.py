@@ -70,7 +70,7 @@ async def test_tools_list_is_exactly_the_fifteen_tools_in_table_order(server_set
 
     server = create_server(server_settings)
     assert server.name == "rss-mcp"
-    assert server.version == "0.4.0"
+    assert server.version == "0.5.0"
     async with Client(server) as client:
         listed = await client.list_tools()
         caps = client.server_capabilities
@@ -80,7 +80,7 @@ async def test_tools_list_is_exactly_the_fifteen_tools_in_table_order(server_set
     assert caps.resources is not None
     assert caps.prompts is not None
     assert info is not None
-    assert info.version == "0.4.0"
+    assert info.version == "0.5.0"
     # subscriptions/listen is served: hosts can wait for resource updates.
     assert "subscriptions/listen" in server._lowlevel_server._request_handlers
 
@@ -902,8 +902,12 @@ async def test_get_digest_tag_scope_and_limit(server_settings: Settings) -> None
         # Scope keeps the other feed's newer entry out; the cap holds at 2.
         assert [entry["guid"] for entry in tagged["entries"]] == ["n2", "n1"]
 
+        # Only the entries the first digest did not hand out remain...
         clamped = await _ok(client, "get_digest", {"max_entries": 500})
-        assert len(clamped["entries"]) == 4
+        assert [entry["guid"] for entry in clamped["entries"]] == ["o1", "n0"]
+        # ...and the whole library is reachable by asking for it again.
+        again = await _ok(client, "get_digest", {"max_entries": 500, "include_delivered": True})
+        assert len(again["entries"]) == 4
 
 
 @pytest.mark.asyncio

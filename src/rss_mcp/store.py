@@ -56,6 +56,7 @@ SELECT
     s.ttl,
     s.skip_hours,
     s.skip_days,
+    s.last_item_count,
     (
         SELECT COUNT(*)
         FROM entries AS e
@@ -177,6 +178,7 @@ def _subscription_from_row(row: Any) -> Subscription:
         ttl=row["ttl"],
         skip_hours=json.loads(row["skip_hours"]) if row["skip_hours"] else [],
         skip_days=_tags_from_column(row["skip_days"]),
+        last_item_count=row["last_item_count"] or 0,
     )
 
 
@@ -254,6 +256,86 @@ class Store:
                  )"""
         )
         self._conn.commit()
+
+    def record_deliveries(
+        self,
+        entry_ids: list[int],
+        *,
+        when: str | None = None,
+        refresh: bool = False,
+    ) -> int:
+        """Remember which entries a digest handed out.
+
+        First delivery wins by default (`ON CONFLICT DO NOTHING`), so replaying
+        an old digest does not make an entry look new. `refresh=True` moves the
+        stamp forward and is used only by the replay path: without it a replayed
+        entry stays older than the window and is re-offered forever.
+        """
+        if not entry_ids:
+            return 0
+        stamp = when or _utc_now()
+        conflict = (
+            "DO UPDATE SET delivered_at = excluded.delivered_at"
+            if refresh
+            else "DO NOTHING"
+        )
+        changed = 0
+        for entry_id in dict.fromkeys(entry_ids):
+            cursor = self._conn.execute(
+                "INSERT INTO digest_deliveries (entry_id, delivered_at) VALUES (?, ?)"
+                f" ON CONFLICT(entry_id) {conflict}",
+                (entry_id, stamp),
+            )
+            changed += max(cursor.rowcount, 0)
+        self._conn.commit()
+        return changed
+
+    def delivery_times(self, entry_ids: list[int]) -> dict[int, str]:
+        """delivered_at for the given ids that were already delivered."""
+        if not entry_ids:
+            return {}
+        found: dict[int, str] = {}
+        unique = list(dict.fromkeys(entry_ids))
+        # Chunked to stay well inside SQLite's variable limit.
+        for start in range(0, len(unique), 500):
+            chunk = unique[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                "SELECT entry_id, delivered_at FROM digest_deliveries"
+                f" WHERE entry_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                found[int(row["entry_id"])] = row["delivered_at"]
+        return found
+
+    def delivered_since(self, since: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM digest_deliveries WHERE delivered_at >= ?", (since,)
+        ).fetchone()
+        return int(row["n"])
+
+    def unread_counts(self, *, exclude_delivered: bool = False) -> dict[int, int]:
+        """Visible unread entries per subscription, optionally skipping digests."""
+        clauses = ["es.read_at IS NULL", "e.duplicate_of IS NULL", "e.filtered = 0"]
+        if exclude_delivered:
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM digest_deliveries AS d"
+                " WHERE d.entry_id = e.id)"
+            )
+        return self._counts_by_subscription(clauses)
+
+    def _counts_by_subscription(self, clauses: list[str]) -> dict[int, int]:
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            "SELECT e.subscription_id AS sid, COUNT(*) AS n"
+            " FROM entries AS e"
+            " LEFT JOIN entry_state AS es ON es.entry_id = e.id"
+            f"{where}"
+            " GROUP BY e.subscription_id",
+            (),
+        ).fetchall()
+        return {int(row["sid"]): int(row["n"]) for row in rows}
 
     def rebuild_duplicates(self) -> None:
         """Re-elect cross-feed keepers after a bulk load."""
@@ -506,13 +588,34 @@ class Store:
         last_modified: str | None,
         last_fetched_at: str | None,
         last_error: str | None,
+        item_count: int | None = None,
     ) -> None:
-        self._conn.execute(
-            """UPDATE subscriptions
-               SET etag = ?, last_modified = ?, last_fetched_at = ?, last_error = ?
-               WHERE id = ?""",
-            (etag, last_modified, last_fetched_at, last_error, subscription_id),
-        )
+        """Record fetch metadata; item_count is the accepted item total of a
+        parsed response. It is left untouched for 304s and errors, so
+        "fetched fine but produced nothing" stays a real, distinct signal
+        instead of being inferred from a row count retention can zero."""
+        if item_count is None:
+            self._conn.execute(
+                """UPDATE subscriptions
+                   SET etag = ?, last_modified = ?, last_fetched_at = ?, last_error = ?
+                   WHERE id = ?""",
+                (etag, last_modified, last_fetched_at, last_error, subscription_id),
+            )
+        else:
+            self._conn.execute(
+                """UPDATE subscriptions
+                   SET etag = ?, last_modified = ?, last_fetched_at = ?, last_error = ?,
+                       last_item_count = ?
+                   WHERE id = ?""",
+                (
+                    etag,
+                    last_modified,
+                    last_fetched_at,
+                    last_error,
+                    int(item_count),
+                    subscription_id,
+                ),
+            )
         self._conn.commit()
 
     def update_feed_hints(
@@ -708,6 +811,7 @@ class Store:
         include_duplicates: bool = False,
         tag: str | None = None,
         starred: bool | None = None,
+        hide_delivered_since: str | None = None,
     ) -> list[Entry]:
         clauses: list[str] = []
         params: list[object] = []
@@ -734,6 +838,16 @@ class Store:
         if since is not None:
             clauses.append("e.published_at >= ?")
             params.append(since)
+        if hide_delivered_since is not None:
+            # Filter in SQL, not after the LIMIT: skipping delivered rows in
+            # Python would make a per-feed window of N return nothing once N
+            # entries were already handed out. An empty cutoff means "hide
+            # every delivery"; a timestamp hides only deliveries newer than it.
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM digest_deliveries AS dd"
+                " WHERE dd.entry_id = e.id AND dd.delivered_at > ?)"
+            )
+            params.append(hide_delivered_since)
         params.append(_clamp_limit(limit))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self._conn.execute(

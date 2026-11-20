@@ -46,8 +46,14 @@ async def test_digest_caps_per_feed_globally_and_by_tag(server_settings: Setting
 
     async with Client(create_server(server_settings)) as client:
         default = await client.call_tool("get_digest", {"max_entries": 20})
-        capped = await client.call_tool("get_digest", {"max_entries": 20, "per_feed": 1})
-        tagged = await client.call_tool("get_digest", {"tag": "tech", "max_entries": 20})
+        # include_delivered: this test is about the per-feed cap, not about
+        # incremental delivery (which the previous call already consumed).
+        capped = await client.call_tool(
+            "get_digest", {"max_entries": 20, "per_feed": 1, "include_delivered": True}
+        )
+        tagged = await client.call_tool(
+            "get_digest", {"tag": "tech", "max_entries": 20, "include_delivered": True}
+        )
 
     entries = default.structured_content["entries"]
     counts: dict[int, int] = {}

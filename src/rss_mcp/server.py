@@ -88,6 +88,13 @@ async def _notify(app: _App, *uris: str) -> None:
             logger.exception("failed to publish resource update notification for %s", uri)
 
 
+def _delivered_cutoff(replay_days: int) -> str:
+    """Deliveries after this instant stay hidden; older ones may replay."""
+    return (datetime.now(timezone.utc) - timedelta(days=replay_days)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -256,6 +263,7 @@ async def _record_refresh(app: _App, sub: Subscription, result) -> dict[str, Any
         last_modified=result.last_modified,
         last_fetched_at=_utc_now(),
         last_error=None,
+        item_count=len(result.entries),
     )
     if (result.ttl, result.skip_hours, result.skip_days) != (sub.ttl, sub.skip_hours, sub.skip_days):
         app.store.update_feed_hints(
@@ -755,7 +763,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
 
     @server.tool()
     async def server_status(*, ctx: Context) -> dict[str, Any]:
-        """Self-inspection: database counts, feed health buckets, scheduling/retention configuration, last prune run, failing feeds, and warnings. Use it to answer "is this server healthy?" without shell access — an empty warnings list means nothing looks wrong."""
+        """Self-inspection: database counts, feed-health buckets (including feeds that fetch fine but store nothing), scheduling/retention configuration, last prune run, a reading section (pending/delivered_24h/per-tag pending), failing feeds, and warnings. Use it to answer "is this server healthy?" without shell access — an empty warnings list means nothing looks wrong."""
         app = _app(ctx)
         return status_payload(app.settings, app.store)
 
@@ -863,15 +871,29 @@ def create_server(settings: Settings | None = None) -> MCPServer:
         tag: str | None = None,
         max_entries: int = 50,
         per_feed: int = 3,
+        include_delivered: bool = False,
+        replay_days: int | None = None,
+        mark_read: bool = False,
         *, ctx: Context,
     ) -> dict[str, Any]:
-        """One-call unread briefing: per-subscription unread groups plus the most recent unread entries (deduped, mute- and filter-aware, bodies omitted; since accepts ISO 8601). per_feed caps each source's contribution (default 3) so high-volume feeds cannot monopolize the list. Follow up with read_entry for detail and mark_entry to catch up."""
+        """One-call unread briefing: per-subscription unread groups plus the most recent unread entries (deduped, mute- and filter-aware, bodies omitted; since accepts ISO 8601). per_feed caps each source's contribution (default 3) so high-volume feeds cannot monopolize the list. Entries already returned by an earlier digest are skipped so repeated calls show what is new; set include_delivered or replay_days=N to see them again, and mark_read=True to mark exactly what this digest returned as read (starred entries are kept). Follow up with read_entry for detail."""
         app = _app(ctx)
         if since is not None:
             since = _normalize_iso_timestamp(since, param="since")
+        if replay_days is not None and replay_days < 0:
+            raise ToolError("replay_days must be zero or greater")
         limit = _limit(app.settings, max_entries)
         cap = max(1, min(per_feed, limit))
         active = [sub for sub in app.store.list_subscriptions(tag=tag) if not sub.muted]
+        # Cutoff for hiding already-delivered entries: None disables the
+        # filter, "" hides every delivery, otherwise only deliveries newer
+        # than the replay window are hidden.
+        if include_delivered:
+            delivered_cutoff = None
+        elif replay_days is None:
+            delivered_cutoff = ""
+        else:
+            delivered_cutoff = _delivered_cutoff(replay_days)
         # Per-source queries keep the pool diverse. Duplicates are fetched and
         # resolved at assembly so a copy can stand in when its keeper sits
         # deeper than the per-feed window in another feed.
@@ -886,6 +908,7 @@ def create_server(settings: Settings | None = None) -> MCPServer:
                     since=since,
                     limit=cap,
                     include_duplicates=True,
+                    hide_delivered_since=delivered_cutoff,
                 )
             )
         pool.sort(key=lambda entry: (entry.published_at or "", entry.id), reverse=True)
@@ -903,10 +926,43 @@ def create_server(settings: Settings | None = None) -> MCPServer:
             taken_articles.add(article)
             per_feed_counts[entry.subscription_id] = per_feed_counts.get(entry.subscription_id, 0) + 1
             entries.append(entry)
+        if entries:
+            # Record every pool row whose article was handed out, not just the
+            # rows returned: a duplicate copy that lost the assembly dedupe
+            # would otherwise resurface as the same article on the next call.
+            delivered_articles = set(taken_articles)
+            app.store.record_deliveries(
+                [
+                    entry.id
+                    for entry in pool
+                    if (entry.duplicate_of if entry.duplicate_of is not None else entry.id)
+                    in delivered_articles
+                ],
+                refresh=replay_days is not None,
+            )
+        marked = 0
+        if mark_read:
+            # Starred entries mean "keep for later": a digest must not eat them.
+            marked = app.store.mark_entries(
+                [entry.id for entry in entries if not entry.starred], True
+            )
+            if marked:
+                await _notify(app, _UNREAD_URI, _SUBSCRIPTIONS_URI)
+        visible = {sub.id for sub in active}
+        pending = sum(
+            count
+            for subscription_id, count in app.store.unread_counts(
+                exclude_delivered=True
+            ).items()
+            if subscription_id in visible
+        )
         return {
             "generated_at": _utc_now(),
             "tag": tag,
             "since": since,
+            "delivered": len(entries),
+            "marked_read": marked,
+            "pending": pending,
             "total_unread": sum(sub.unread_count for sub in active),
             "subscriptions": [
                 {

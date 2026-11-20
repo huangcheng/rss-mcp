@@ -13,6 +13,7 @@ from rss_mcp.config import Settings
 from rss_mcp.db import connect, init_db
 from rss_mcp.metrics import render_from_settings, render_metrics
 from rss_mcp.models import EntryInput
+from rss_mcp.status import status_payload
 from rss_mcp.store import Store
 
 _LINE = re.compile(
@@ -48,7 +49,12 @@ def test_render_reports_state_and_host_series(tmp_path):
     sub = store.add_subscription("https://news.example/feed")
     stamp = (datetime.now(timezone.utc) - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
     store.update_fetch_meta(
-        sub.id, etag=None, last_modified=None, last_fetched_at=stamp, last_error=None
+        sub.id,
+        etag=None,
+        last_modified=None,
+        last_fetched_at=stamp,
+        last_error=None,
+        item_count=1,
     )
     store.upsert_entries(sub.id, [EntryInput(guid="one", title="One")])
     store.record_prune(4)
@@ -57,7 +63,7 @@ def test_render_reports_state_and_host_series(tmp_path):
 
     samples = _samples(body)
     assert samples["rss_mcp_up"] == 1
-    assert samples['rss_mcp_info{version="0.4.0",engine="sqlite"}'] == 1
+    assert samples['rss_mcp_info{version="0.5.0",engine="sqlite"}'] == 1
     assert samples['rss_mcp_subscriptions{state="ok"}'] == 1
     assert samples['rss_mcp_subscriptions{state="failing"}'] == 0
     assert samples['rss_mcp_entries{state="unread"}'] == 1
@@ -67,6 +73,43 @@ def test_render_reports_state_and_host_series(tmp_path):
     assert samples["rss_mcp_prune_last_run_timestamp_seconds"] > 0
     assert samples["rss_mcp_retention_days"] == 30
     assert samples["rss_mcp_status_warnings"] == 0
+
+
+def test_empty_feeds_are_an_overlay_not_a_sixth_state(tmp_path):
+    settings = _settings(tmp_path)
+    conn, store = _open(settings)
+    ok = store.add_subscription("https://has-items.example/feed")
+    store.upsert_entries(ok.id, [EntryInput(guid="one", title="One")])
+    store.update_fetch_meta(
+        ok.id,
+        etag=None,
+        last_modified=None,
+        last_fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        last_error=None,
+        item_count=1,
+    )
+    empty = store.add_subscription("https://empty.example/feed")
+    store.update_fetch_meta(
+        empty.id,
+        etag=None,
+        last_modified=None,
+        last_fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        last_error=None,
+        item_count=0,
+    )
+    body = render_metrics(settings, store)
+    payload = status_payload(settings, store)
+    conn.close()
+
+    samples = _samples(body)
+    states = sum(
+        value
+        for name, value in samples.items()
+        if name.startswith("rss_mcp_subscriptions{")
+    )
+    assert states == payload["feeds"]["total"] == 2
+    assert samples["rss_mcp_feeds_empty"] == 1
+    assert all('state="empty"' not in name for name in samples)
 
 
 def test_render_omits_prune_series_until_recorded(tmp_path):

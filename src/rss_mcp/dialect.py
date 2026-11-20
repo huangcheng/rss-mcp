@@ -56,6 +56,12 @@ _PG_SCHEMA = (
         value TEXT,
         updated_at TEXT NOT NULL
     )""",
+    """CREATE TABLE IF NOT EXISTS digest_deliveries (
+        entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+        delivered_at TEXT NOT NULL
+    )""",
+    """CREATE INDEX IF NOT EXISTS digest_deliveries_delivered_at
+        ON digest_deliveries (delivered_at)""",
 )
 
 _PG_MIGRATIONS = (
@@ -74,6 +80,7 @@ _PG_MIGRATIONS = (
     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS ttl INTEGER",
     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS skip_hours TEXT",
     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS skip_days TEXT",
+    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_item_count INTEGER NOT NULL DEFAULT 0",
 )
 
 _CANONICAL_INDEX_DDL = "CREATE INDEX IF NOT EXISTS entries_canonical_idx ON entries(canonical_url)"

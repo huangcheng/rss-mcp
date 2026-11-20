@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     fetch_interval INTEGER,
     ttl INTEGER,
     skip_hours TEXT,
-    skip_days TEXT
+    skip_days TEXT,
+    last_item_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS entries (
@@ -54,6 +55,16 @@ CREATE TABLE IF NOT EXISTS server_meta (
     updated_at TEXT NOT NULL
 );
 
+-- Entries already handed to the caller by get_digest, so "what is new" does
+-- not mean "the newest 50 rows of the same unread pile" every time.
+CREATE TABLE IF NOT EXISTS digest_deliveries (
+    entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+    delivered_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS digest_deliveries_delivered_at
+    ON digest_deliveries (delivered_at);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
     title,
     summary,
@@ -82,6 +93,11 @@ END;
 
 # Columns added after 0.1.x; applied to existing databases on startup.
 MIGRATIONS = (
+    (
+        "subscriptions",
+        "last_item_count",
+        "ALTER TABLE subscriptions ADD COLUMN last_item_count INTEGER NOT NULL DEFAULT 0",
+    ),
     ("subscriptions", "user_agent", "ALTER TABLE subscriptions ADD COLUMN user_agent TEXT"),
     ("subscriptions", "headers", "ALTER TABLE subscriptions ADD COLUMN headers TEXT"),
     (

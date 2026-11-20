@@ -102,7 +102,9 @@ def test_status_payload_reports_health_and_warnings(tmp_path):
     # about beyond the failing feed.
     assert not any("prune" in warning for warning in payload["warnings"])
     assert payload["warnings"] == [
-        "1 feed(s) failing; see list_subscriptions(failing_only=true)"
+        "1 feed(s) failing; see list_subscriptions(failing_only=true)",
+        "2 feed(s) fetch successfully but store no entries; "
+        "the feed may be empty upstream or parse to nothing",
     ]
 
 

@@ -26,6 +26,7 @@ class Subscription:
     ttl: int | None = None
     skip_hours: list[int] = field(default_factory=list)
     skip_days: list[str] = field(default_factory=list)
+    last_item_count: int = 0
 
 
 @dataclass

@@ -45,6 +45,12 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 - **`export-db` / `import-db`**: engine-agnostic JSONL export and import (read/star state, duplicate links, `--since`, `--no-content`, merge or `--replace`), which makes `sqlite -> postgres` migration a two-command operation.
 - **CLI subcommands**: `serve` stays the default, so flag-only invocations (and the Docker image) are unchanged; the image now keeps its flags in `CMD` so `docker run <image> status` works.
 
+## 0.5.0 — released 2026-11-20
+
+- **Incremental digests**: `digest_deliveries` (both engines, cascade on entry delete) records what `get_digest` handed out; repeat calls return only new entries. `include_delivered`, `replay_days=N`, `mark_read=true` (starred entries spared), and `delivered`/`marked_read`/`pending` in the response. Delivery filtering happens in SQL, before each feed's `LIMIT`.
+- **Reading state**: `server_status.reading` (`pending`, `delivered_24h`, `by_tag`), plus metrics `rss_mcp_digest_pending`, `rss_mcp_digest_delivered_24h`, `rss_mcp_tag_pending{tag}`.
+- **Empty-feed detection**: feeds that fetch successfully but store no entries are a distinct bucket (`feeds.empty`, `rss_mcp_subscriptions{state="empty"}`) and a warning — the silent case that hid 10 feeds on the live library.
+
 ## 0.5.x — remaining robustness work
 
 - Optional `curl_cffi` extra for TLS-impersonation fetches against bot-walled feeds.

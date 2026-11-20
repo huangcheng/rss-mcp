@@ -49,6 +49,40 @@ def render_metrics(
     _family(parts, "rss_mcp_subscriptions", "gauge", "Subscriptions by health state.")
     for state in ("ok", "failing", "disabled", "muted", "never_fetched"):
         parts.append(f'rss_mcp_subscriptions{{state="{state}"}} {payload["feeds"][state]}')
+    # An overlay, not a sixth exclusive bucket: an empty feed is still "ok" in
+    # the family above, so summing it must keep matching the subscription count.
+    _family(
+        parts,
+        "rss_mcp_feeds_empty",
+        "gauge",
+        "Feeds whose last parsed fetch accepted zero items.",
+    )
+    parts.append(f"rss_mcp_feeds_empty {payload['feeds']['empty']}")
+
+    reading = payload["reading"]
+    _family(
+        parts,
+        "rss_mcp_digest_pending",
+        "gauge",
+        "Visible unread entries a digest has not handed out yet.",
+    )
+    parts.append(f"rss_mcp_digest_pending {reading['pending']}")
+    _family(
+        parts,
+        "rss_mcp_digest_delivered_24h",
+        "gauge",
+        "Entries delivered by get_digest in the last 24 hours.",
+    )
+    parts.append(f"rss_mcp_digest_delivered_24h {reading['delivered_24h']}")
+    if reading["by_tag"]:
+        _family(
+            parts,
+            "rss_mcp_tag_pending",
+            "gauge",
+            "Undelivered unread entries per tag.",
+        )
+        for tag, count in sorted(reading["by_tag"].items()):
+            parts.append(f'rss_mcp_tag_pending{{tag="{_escape(tag)}"}} {count}')
 
     _family(parts, "rss_mcp_entries", "gauge", "Cached entries by state.")
     database = payload["database"]
@@ -140,6 +174,10 @@ def render_metrics(
     parts.append(f"rss_mcp_status_warnings {len(payload['warnings'])}")
 
     return "\n".join(parts) + "\n"
+
+
+def _escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _host_rows(store: Store) -> dict[str, dict[str, int]]:

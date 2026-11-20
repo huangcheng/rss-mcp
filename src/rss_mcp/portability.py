@@ -59,6 +59,7 @@ _ENTRY_COLUMNS = (
     "e.filtered",
     "es.read_at",
     "es.starred",
+    "dd.delivered_at",
 )
 
 
@@ -111,6 +112,7 @@ def export_lines(
     sql = (
         f"SELECT {', '.join(_ENTRY_COLUMNS)} FROM entries AS e"
         " LEFT JOIN entry_state AS es ON es.entry_id = e.id"
+        " LEFT JOIN digest_deliveries AS dd ON dd.entry_id = e.id"
         f"{where} ORDER BY e.id"
     )
     for row in _batch(conn, sql, params):
@@ -128,6 +130,26 @@ _SUBSCRIPTION_DEFAULTS: dict[str, Any] = {
     "disabled": 0,
     "muted": 0,
 }
+
+
+def _set_delivery(conn: Any, entry_id: int, delivered_at: str | None, *, restore: bool) -> bool:
+    if not delivered_at:
+        return False
+    if restore:
+        conn.execute(
+            "INSERT INTO digest_deliveries (entry_id, delivered_at) VALUES (?, ?)"
+            " ON CONFLICT(entry_id) DO UPDATE SET delivered_at = excluded.delivered_at",
+            (entry_id, delivered_at),
+        )
+        return True
+    # Merge: the backup is older, so it may add a delivery but never move one
+    # backwards, which would re-offer entries the caller has already seen.
+    conn.execute(
+        "INSERT INTO digest_deliveries (entry_id, delivered_at) VALUES (?, ?)"
+        " ON CONFLICT(entry_id) DO NOTHING",
+        (entry_id, delivered_at),
+    )
+    return True
 
 
 def _insert_subscription(conn: Any, record: dict[str, Any]) -> int:
@@ -245,6 +267,7 @@ def import_lines(conn: Any, lines: Iterable[str], *, replace: bool = False) -> d
         "entries_added": 0,
         "entries_skipped": 0,
         "states_restored": 0,
+        "deliveries_restored": 0,
         "duplicates_relinked": 0,
     }
     subscription_ids: dict[int, int] = {}
@@ -299,6 +322,13 @@ def import_lines(conn: Any, lines: Iterable[str], *, replace: bool = False) -> d
                     restore=replace,
                 )
                 summary["states_restored"] += 1
+            if _set_delivery(
+                conn,
+                entry_ids[int(record["id"])],
+                record.get("delivered_at"),
+                restore=replace,
+            ):
+                summary["deliveries_restored"] += 1
             if record.get("duplicate_of") is not None:
                 duplicate_pairs.append(
                     (entry_ids[int(record["id"])], int(record["duplicate_of"]))
