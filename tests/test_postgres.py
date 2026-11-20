@@ -409,3 +409,37 @@ def test_server_meta_and_stats_parity_on_postgres(pg_store, pg_url):
     assert status["database"]["unread"] == 1
     assert status["retention"]["prune_total_removed"] == 12
     assert status["feeds"]["total"] == 1
+
+
+def test_sqlite_export_imports_into_postgres(pg_store, tmp_path):
+    """The documented migration path: sqlite -> JSONL -> postgres."""
+    from rss_mcp.db import connect
+    from rss_mcp.portability import export_lines, import_lines
+
+    source_path = tmp_path / "source.db"
+    conn = connect(source_path)
+    init_db(conn)
+    store = Store(conn)
+    sub = store.add_subscription("https://migrate.example/feed", tags=["news"])
+    store.upsert_entries(
+        sub.id,
+        [
+            EntryInput(guid="m1", title="First", content="body", published_at="2026-11-01T00:00:00Z"),
+            EntryInput(guid="m2", title="Second", published_at="2026-11-02T00:00:00Z"),
+        ],
+    )
+    entry = store.list_entries(subscription_id=sub.id, limit=10)[0]
+    store.mark_entries([entry.id], read=True)
+    lines = list(export_lines(conn))
+    conn.close()
+
+    summary = import_lines(pg_store._conn, lines, replace=True)
+    target = pg_store.list_subscriptions()
+    entries = pg_store.list_entries(subscription_id=target[0].id, limit=10)
+
+    assert summary["subscriptions_added"] == 1
+    assert summary["entries_added"] == 2
+    assert target[0].tags == ["news"]
+    assert {row.guid for row in entries} == {"m1", "m2"}
+    assert sum(1 for row in entries if row.read_at) == 1
+    assert json.loads(lines[-1])["type"] == "entry"

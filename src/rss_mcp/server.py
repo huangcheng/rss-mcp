@@ -4,13 +4,14 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import sys
 import time
 from collections import deque
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
@@ -35,6 +36,7 @@ from rss_mcp import __version__
 from rss_mcp.config import Settings, load_settings
 from rss_mcp.db import connect_db, init_db
 from rss_mcp.feed_client import discover_feeds, fetch_feed
+from rss_mcp.logging_setup import configure_logging, request_context
 from rss_mcp.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
 from rss_mcp.metrics import render_from_settings
 from rss_mcp.models import Entry, Subscription
@@ -471,6 +473,35 @@ class _StaticTokenVerifier:
         return None
 
 
+class _RequestLogContext:
+    """Tag every log line emitted while handling a request."""
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers") or []
+        }
+        fields: dict[str, Any] = {
+            "http_method": scope.get("method"),
+            "http_path": scope.get("path"),
+        }
+        if headers.get("mcp-method"):
+            fields["mcp_method"] = headers["mcp-method"]
+        if headers.get("mcp-name"):
+            fields["mcp_name"] = headers["mcp-name"]
+        token = request_context.set(fields)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            request_context.reset(token)
+
+
 class _RateLimitMiddleware:
     """Sliding-window per-client request cap; keys on bearer token or client IP."""
 
@@ -543,7 +574,7 @@ def build_http_app(
     app.state.settings = settings
     app.add_route("/healthz", _healthz, methods=["GET"])
     app.add_route("/metrics", _metrics_endpoint, methods=["GET"])
-    return _RateLimitMiddleware(app, settings.rate_limit_per_minute)
+    return _RequestLogContext(_RateLimitMiddleware(app, settings.rate_limit_per_minute))
 
 
 def create_server(settings: Settings | None = None) -> MCPServer:
@@ -1022,13 +1053,99 @@ def build_parser() -> argparse.ArgumentParser:
         "status",
         help="Print server self-inspection (database counts, feed health, warnings) as JSON.",
     )
+    export = subparsers.add_parser(
+        "export-db",
+        help="Write the library as JSON Lines (- for stdout).",
+    )
+    export.add_argument("--out", default="-", help="Output path, or - for stdout (default).")
+    export.add_argument(
+        "--since", default=None, help="Only export entries published at or after this ISO 8601 time."
+    )
+    export.add_argument(
+        "--no-content",
+        action="store_true",
+        help="Omit stored article bodies (smaller, summaries kept).",
+    )
+    load = subparsers.add_parser(
+        "import-db",
+        help="Load a JSON Lines export (- for stdin).",
+    )
+    load.add_argument("--in", dest="input_file", default="-", help="Input path, or - for stdin.")
+    load.add_argument(
+        "--replace",
+        action="store_true",
+        help="Delete the existing library first instead of merging by URL/guid.",
+    )
     parser.set_defaults(command="serve")
     return parser
 
 
+@contextmanager
+def _output_stream(path: str) -> Iterator[Any]:
+    if path == "-":
+        yield sys.stdout
+        return
+    with open(path, "w", encoding="utf-8") as handle:
+        yield handle
+
+
+def _run_export(settings: Settings, args: Any) -> None:
+    from rss_mcp.portability import export_lines
+
+    since = None
+    if args.since:
+        try:
+            since = _normalize_iso_timestamp(args.since, param="since")
+        except ToolError as exc:
+            raise SystemExit(f"rss-mcp: {exc}") from None
+    counts = {"subscriptions": 0, "entries": 0}
+    conn = connect_db(settings)
+    try:
+        init_db(conn)
+        with _output_stream(args.out) as stream:
+            for line in export_lines(
+                conn, since=since, include_content=not args.no_content
+            ):
+                record_type = json.loads(line).get("type")
+                if record_type == "subscription":
+                    counts["subscriptions"] += 1
+                elif record_type == "entry":
+                    counts["entries"] += 1
+                stream.write(line + "\n")
+            stream.flush()
+    finally:
+        conn.close()
+    # Export writes JSONL to stdout when --out is "-": the summary goes to
+    # stderr so a pipeline stays parsable.
+    print(json.dumps({"export": counts}), file=sys.stderr)
+
+
+def _run_import(settings: Settings, args: Any) -> None:
+    from rss_mcp.portability import import_lines
+
+    conn = connect_db(settings)
+    try:
+        init_db(conn)
+        if args.input_file == "-":
+            summary = import_lines(conn, sys.stdin, replace=args.replace)
+        else:
+            with open(args.input_file, encoding="utf-8") as handle:
+                summary = import_lines(conn, handle, replace=args.replace)
+    finally:
+        conn.close()
+    print(json.dumps({"import": summary}, ensure_ascii=False, indent=2))
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
+    json_logs = configure_logging(os.environ.get("RSS_MCP_LOG_FORMAT"))
     settings = load_settings()
+    if args.command == "export-db":
+        _run_export(settings, args)
+        return
+    if args.command == "import-db":
+        _run_import(settings, args)
+        return
     if args.command == "status":
         conn = connect_db(settings)
         try:
@@ -1045,4 +1162,6 @@ def main(argv: list[str] | None = None) -> None:
         import uvicorn
 
         app = build_http_app(server, settings, path=args.path, host=args.host)
-        uvicorn.run(app, host=args.host, port=args.port)
+        # log_config=None keeps uvicorn from installing its own handlers over
+        # the JSON one; without the JSON format uvicorn keeps its defaults.
+        uvicorn.run(app, host=args.host, port=args.port, **({"log_config": None} if json_logs else {}))

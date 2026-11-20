@@ -255,6 +255,12 @@ class Store:
         )
         self._conn.commit()
 
+    def rebuild_duplicates(self) -> None:
+        """Re-elect cross-feed keepers after a bulk load."""
+        self._release_shadowed_keepers()
+        self._conn.commit()
+        self._reelect_keepers()
+
     @property
     def engine(self) -> str:
         return self._dialect.name

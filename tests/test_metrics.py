@@ -57,7 +57,7 @@ def test_render_reports_state_and_host_series(tmp_path):
 
     samples = _samples(body)
     assert samples["rss_mcp_up"] == 1
-    assert samples['rss_mcp_info{version="0.3.6",engine="sqlite"}'] == 1
+    assert samples['rss_mcp_info{version="0.4.0",engine="sqlite"}'] == 1
     assert samples['rss_mcp_subscriptions{state="ok"}'] == 1
     assert samples['rss_mcp_subscriptions{state="failing"}'] == 0
     assert samples['rss_mcp_entries{state="unread"}'] == 1

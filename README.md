@@ -86,6 +86,19 @@ curl -H "Authorization: Bearer $RSS_MCP_METRICS_TOKEN" http://127.0.0.1:8000/met
 
 Metrics are state, not traffic — pair them with the OTel spans, which carry call counts and latency: `rss_mcp_subscriptions{state="ok|failing|disabled|muted|never_fetched"}`, `rss_mcp_entries{state="total|unread|starred|filtered|duplicates_hidden"}`, `rss_mcp_feed_last_success_timestamp_seconds{host}`, `rss_mcp_feed_consecutive_failures{host}`, `rss_mcp_prune_last_run_timestamp_seconds`, `rss_mcp_prune_removed_total`, `rss_mcp_retention_days`, `rss_mcp_status_warnings` (alert on `> 0`), plus `rss_mcp_up` / `rss_mcp_info`. A scrape opens its own connection and never shares the request path's transaction.
 
+### Backup, restore, and engine migration
+
+`rss-mcp export-db` writes the whole library as JSON Lines (a header, then one object per subscription and per entry, including read/star state and cross-feed duplicate links); `rss-mcp import-db` reads it back. Both use the same engine-agnostic path, so `sqlite -> JSONL -> postgres` (or the reverse) is the documented migration:
+
+```bash
+rss-mcp export-db --out rss-backup.jsonl          # --out - streams to stdout
+rss-mcp export-db --out small.jsonl --no-content  # omit article bodies, keep summaries
+rss-mcp import-db --in rss-backup.jsonl           # merge: match subscriptions by URL, entries by guid
+rss-mcp import-db --in rss-backup.jsonl --replace # wipe the target library first (destructive)
+```
+
+Import is idempotent: re-running the same file adds nothing. A merge only ever *adds* state — it never clears a read timestamp or a star you added after the backup — while `--replace` restores the file verbatim and runs as one transaction, so a truncated backup leaves the previous library untouched. `--since` compares an entry's publication date and falls back to when it was fetched, so undated items are not silently dropped. Subscriptions carry their `headers`, so treat an export as sensitive when feeds use per-feed auth headers.
+
 ### Self-inspection
 
 `server_status` (tool) and `rss-mcp status` (CLI, prints the same JSON) report database counts, feed health, scheduling/retention configuration, the last prune run, feeds needing attention, and `warnings`. Warnings cover the silent-failure cases this server has actually hit: retention configured but pruning never ran (or went stale), no feed fetching successfully (including the never-fetched case, after a one-day grace period), and failing feeds. Deliberately paused feeds are not warnings.
@@ -136,6 +149,7 @@ The container binds `0.0.0.0` internally (required for port mapping), so set `RS
 | `RSS_MCP_REFRESH_INTERVAL` | unset (no background refresh; seconds when set) |
 | `RSS_MCP_DISABLE_AFTER_FAILURES` | `5` (`0` never auto-disable) |
 | `RSS_MCP_RETENTION_DAYS` | unset (keep entries forever) |
+| `RSS_MCP_LOG_FORMAT` | unset (human-readable logs); `json` writes one JSON object per line to stderr, with `trace_id`/`span_id` when OTel is on and `mcp_method`/`mcp_name` for HTTP requests |
 | `RSS_MCP_METRICS_TOKEN` | unset (`/metrics` disabled; set it to enable a bearer-protected scrape endpoint) |
 | `RSS_MCP_RATE_LIMIT_PER_MINUTE` | `120` (`0` disables; HTTP only) |
 | `RSS_MCP_OTEL_OTLP_ENDPOINT` | unset (traces off); set to an OTLP/HTTP trace URL (e.g. `http://tempo:43210/v1/traces`) to enable — requires the `[otel]` extra |

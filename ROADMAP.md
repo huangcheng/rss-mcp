@@ -37,10 +37,16 @@ Principles: agent-only (no GUI/TUI), one SQLite file by default, lightweight cor
 
 - **OpenTelemetry traces**: optional `[otel]` extra + `RSS_MCP_OTEL_OTLP_ENDPOINT` enables OTLP/HTTP trace export. Every inbound MCP request is traced by the SDK's built-in middleware (gen_ai semantic conventions, W3C trace-context extraction); custom `rss.feed_fetch` and `rss.refresh_all` spans carry feed host/status/duration/304 outcome. Without an endpoint or the extra, all spans stay no-ops. Metrics deferred to 0.5.x.
 
-## 0.5.x — robustness and observability
+## 0.4.0 — released 2026-11-20
 
-- Prometheus `/metrics` (fetch latency, failure rates, queue depth).
-- Structured logging; `export-db` / `import-db` backup and migration tools.
+- **`server_status` tool + `rss-mcp status` CLI**: one self-inspection payload — database counts, feed-health buckets, scheduling/retention configuration, the last prune run, feeds needing attention, and `warnings` for the silent-failure cases (retention that never ran or went stale, no successful fetch in a day, a library that has never fetched, failing feeds). Deliberately paused feeds are not warnings. A `server_meta` table records every prune cycle, including no-ops.
+- **Prometheus `/metrics`**: state, not traffic (counts, per-host last success and consecutive failures, prune liveness and cumulative deletions, retention window, warning count), bearer-protected by `RSS_MCP_METRICS_TOKEN` and absent when unset; one throwaway connection per scrape.
+- **Structured logging**: `RSS_MCP_LOG_FORMAT=json` emits one JSON object per line on stderr with `trace_id`/`span_id` from OTel and `mcp_method`/`mcp_name` per request; uvicorn hands its loggers back to the root handler.
+- **`export-db` / `import-db`**: engine-agnostic JSONL export and import (read/star state, duplicate links, `--since`, `--no-content`, merge or `--replace`), which makes `sqlite -> postgres` migration a two-command operation.
+- **CLI subcommands**: `serve` stays the default, so flag-only invocations (and the Docker image) are unchanged; the image now keeps its flags in `CMD` so `docker run <image> status` works.
+
+## 0.5.x — remaining robustness work
+
 - Optional `curl_cffi` extra for TLS-impersonation fetches against bot-walled feeds.
 
 ## 1.0.0 — stability commitment
